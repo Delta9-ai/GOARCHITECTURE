@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F4F7FB">
+<title>Compte rendu de diagnostic — GO Architecture</title>
+
+<!--
+  Interface « Compte rendu de diagnostic ».
+  Un seul fichier : HTML + JavaScript vanilla + Tailwind (CDN, aucun build).
+  Toute la logique métier reste côté serveur (cr_engine.py + prompt_diagnostic.md).
+  Ce fichier ne fait qu'orchestrer l'UI et appeler l'API.
+-->
+
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<script>
+  // Palette « bleu de plan » (cyanotype / blueprint) : blanc froid, encre marine,
+  // un seul accent cobalt pour les actions. Le rouge reste réservé aux alertes
+  // (URGENT, erreur, enregistrement en cours).
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          paper:   "#F4F7FB",
+          surface: "#FFFFFF",
+          ink:     "#0E243D",
+          muted:   "#566B80",
+          faint:   "#93A6B8",
+          line:    "#DBE6F1",
+          "line-2":"#C6D5E6",
+          accent:  "#1B5CAB",
+          "accent-ink": "#154A8C",
+          "accent-soft":"#E6EFFB",
+          urgent:  "#C0342B",
+          court:   "#A96A12",
+          moyen:   "#45586B",
+        },
+        fontFamily: {
+          display: ['"Space Grotesk"', "system-ui", "sans-serif"],
+          mono:    ['"IBM Plex Mono"', "ui-monospace", "monospace"],
+          sans:    ['"Inter"', "system-ui", "sans-serif"],
+        },
+      },
+    },
+  };
+</script>
+
+<style>
+  :root { color-scheme: light; }
+  html { font-size: 16px; -webkit-text-size-adjust: 100%; }
+  body {
+    background: #F4F7FB;
+    color: #0E243D;
+    font-family: "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .font-display { font-family: "Space Grotesk", system-ui, sans-serif; }
+  .font-mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+  /* Fond « bleu de plan » très discret pour éviter le blanc plat. */
+  body::before{
+    content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background:
+      radial-gradient(1200px 620px at 100% -12%, rgba(27,92,171,.055), transparent 60%),
+      radial-gradient(900px 520px at -10% 112%, rgba(14,36,61,.045), transparent 55%);
+  }
+
+  /* Cibles tactiles confortables (usage tablette / téléphone sur le terrain). */
+  button, select, input, textarea { min-height: 44px; }
+  /* 16px sur les champs = pas de zoom automatique iOS au focus. */
+  input, select, textarea { font-size: 16px; }
+
+  /* Libellés techniques : monospace façon cartouche de plan. */
+  .kicker{
+    font-family:"IBM Plex Mono", ui-monospace, monospace; font-weight:500;
+    letter-spacing:.14em; text-transform:uppercase; font-size:11px;
+  }
+  .card{
+    background:#FFFFFF; border:1px solid #DBE6F1; border-radius:12px;
+    box-shadow: 0 1px 0 rgba(14,36,61,.02), 0 1px 3px rgba(14,36,61,.04);
+  }
+  .champ{
+    background:#FFFFFF; border:1px solid #C6D5E6; border-radius:9px;
+    padding:0 14px; color:#0E243D; transition:border-color .16s, box-shadow .16s;
+  }
+  .champ:focus{ outline:none; border-color:#1B5CAB; box-shadow:0 0 0 3px rgba(27,92,171,.16); }
+
+  .btn-primaire{
+    background:#1B5CAB; color:#fff; border-radius:10px; font-weight:600;
+    transition:filter .16s, transform .06s, box-shadow .16s;
+    box-shadow:0 1px 2px rgba(21,74,140,.35);
+  }
+  .btn-primaire:hover:not(:disabled){ filter:brightness(1.06); }
+  .btn-primaire:active:not(:disabled){ transform:translateY(1px); }
+  .btn-primaire:disabled{ background:#B9CBE0; color:#fff; box-shadow:none; cursor:not-allowed; }
+
+  .btn-fant{
+    background:#fff; border:1px solid #C6D5E6; border-radius:9px; color:#33475C;
+    font-weight:500; transition:border-color .16s, color .16s, background .16s;
+  }
+  .btn-fant:hover{ border-color:#1B5CAB; color:#154A8C; background:#F0F5FC; }
+
+  /* Zone de dépôt (audio / photos). */
+  .depot{
+    border:1.5px dashed #C6D5E6; border-radius:11px; background:#F8FBFE;
+    transition:border-color .16s, background .16s;
+  }
+  .depot:hover{ border-color:#1B5CAB; background:#EFF5FD; }
+  .depot--survol{ border-color:#1B5CAB; background:#E3EEFB; }
+
+  /* Sélecteur natif habillé (flèche personnalisée). */
+  .select-wrap{ position:relative; }
+  .select-wrap select{ appearance:none; -webkit-appearance:none; padding-right:40px; }
+  .select-wrap::after{
+    content:""; position:absolute; right:15px; top:50%; width:10px; height:10px;
+    transform:translateY(-65%) rotate(45deg);
+    border-right:2px solid #566B80; border-bottom:2px solid #566B80; pointer-events:none;
+  }
+
+  /* Bouton d'enregistrement (bleu au repos, rouge « REC » en cours). */
+  .rec-btn{
+    width:92px; height:92px; border-radius:9999px; background:#1B5CAB; color:#fff;
+    display:flex; align-items:center; justify-content:center;
+    transition:filter .16s, transform .06s; box-shadow:0 2px 12px rgba(21,74,140,.28);
+  }
+  .rec-btn:hover{ filter:brightness(1.06); }
+  .rec-btn:active{ transform:scale(.97); }
+  .rec-btn.enreg{ background:#C0342B; box-shadow:0 2px 12px rgba(192,52,43,.3); }
+  .pulse-rec { animation: pulse-rec 1.5s ease-out infinite; }
+  @keyframes pulse-rec {
+    0%   { box-shadow:0 0 0 0 rgba(192,52,43,.40); }
+    70%  { box-shadow:0 0 0 16px rgba(192,52,43,0); }
+    100% { box-shadow:0 0 0 0 rgba(192,52,43,0); }
+  }
+
+  /* Forme d'onde : seule animation « vivante » autorisée. */
+  .onde{ display:flex; align-items:center; height:34px; gap:3px; }
+  .onde span{
+    display:inline-block; width:3.5px; height:8px; border-radius:2px; background:#C0342B;
+    animation: onde 1s ease-in-out infinite;
+  }
+  .onde span:nth-child(odd){ animation-delay:.18s; }
+  .onde span:nth-child(3n){ animation-delay:.34s; }
+  @keyframes onde { 0%,100%{ height:8px } 50%{ height:30px } }
+
+  .spin { animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Vignette photo. */
+  .photo-carte{
+    background:#fff; border:1px solid #DBE6F1; border-radius:12px; overflow:hidden;
+    transition:border-color .16s, box-shadow .16s;
+  }
+  .photo-carte:hover{ border-color:#1B5CAB; box-shadow:0 2px 8px rgba(14,36,61,.08); }
+  .photo-carte.glisse{ opacity:.4; }
+
+  /* Case à cocher « présent ». */
+  .chk{ width:22px; height:22px; accent-color:#1B5CAB; cursor:pointer; }
+
+  input[type="date"]::-webkit-calendar-picker-indicator{ cursor:pointer; opacity:.55; }
+
+  /* Barre d'action collante en pied. */
+  .barre-action{
+    position:sticky; bottom:0; z-index:30;
+    background:rgba(244,247,251,.86);
+    backdrop-filter:saturate(140%) blur(8px);
+    -webkit-backdrop-filter:saturate(140%) blur(8px);
+    border-top:1px solid #DBE6F1;
+  }
+
+  .modale-fond{ background:rgba(14,36,61,.46); }
+
+  /* Respect strict de prefers-reduced-motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .onde span, .pulse-rec, .spin { animation: none !important; }
+    * { transition-duration:.01ms !important; }
+  }
+</style>
+</head>
+
+<body class="min-h-screen antialiased">
+
+<!-- Bandeau d'erreur / information (masqué par défaut). -->
+<div id="banniere" class="hidden sticky top-0 z-50 border-b border-urgent/25 bg-[#FBEDEC] text-urgent px-4 sm:px-6 py-3 text-[14.5px] flex items-start gap-3">
+  <svg class="w-5 h-5 shrink-0 mt-[1px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  <span id="banniere-txt" class="flex-1 leading-snug"></span>
+  <button onclick="cacherBanniere()" class="text-urgent/60 hover:text-urgent transition" aria-label="Fermer">
+    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  </button>
+</div>
+
+<!-- ================= EN-TÊTE ================= -->
+<header class="border-b border-line/80 bg-surface/70">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 h-16 flex items-center gap-3">
+    <div class="w-9 h-9 rounded-lg bg-ink text-paper flex items-center justify-center shrink-0">
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01"/><path d="M9 12v.01"/><path d="M9 15v.01"/></svg>
+    </div>
+    <div class="leading-tight">
+      <div class="kicker text-accent">GO Architecture · Copropriété</div>
+      <div class="font-display font-semibold text-[15.5px] -mt-[1px]">Compte rendu de diagnostic</div>
+    </div>
+    <button id="btn-deconnexion" class="ml-auto btn-fant h-10 px-3 text-[13.5px] flex items-center gap-1.5" aria-label="Se déconnecter">
+      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span class="hidden sm:inline">Déconnexion</span>
+    </button>
+  </div>
+</header>
+
+<main class="max-w-4xl mx-auto px-4 sm:px-6 pt-7 pb-28 space-y-5">
+
+  <!-- Intro courte -->
+  <p class="text-[14.5px] text-muted max-w-xl leading-relaxed">
+    Note vocale de visite et photos&nbsp;: l'outil rédige le rapport et le met en page dans le template de l'agence, prêt à relire dans Word.
+  </p>
+
+  <!-- ============================================================= -->
+  <!-- 01 — LE CHANTIER                                              -->
+  <!-- ============================================================= -->
+  <section class="card p-5 sm:p-6">
+    <div class="flex items-baseline gap-3 mb-5">
+      <span class="kicker text-accent">01</span>
+      <h2 class="font-display text-[19px] font-semibold leading-none">Le chantier</h2>
+      <span id="etat-chantier" class="ml-auto text-[12.5px] text-faint"></span>
+    </div>
+
+    <label class="block kicker text-muted mb-2" for="select-chantier">Immeuble</label>
+    <div class="flex gap-2.5 flex-col sm:flex-row">
+      <div class="select-wrap flex-1">
+        <select id="select-chantier" class="champ w-full h-12">
+          <option value="">Choisir un immeuble</option>
+        </select>
+      </div>
+      <button id="btn-nouvel-immeuble" class="btn-fant px-4 h-12 text-[14.5px] flex items-center justify-center gap-2 shrink-0">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Nouvel immeuble
+      </button>
+    </div>
+
+    <!-- Détails de l'immeuble sélectionné -->
+    <div id="details-chantier" class="hidden mt-6 pt-6 border-t border-line">
+      <div class="grid sm:grid-cols-2 gap-5">
+        <div>
+          <span class="block kicker text-faint mb-1.5">Adresse</span>
+          <p id="d-adresse" class="text-[15px] font-display"></p>
+        </div>
+        <div>
+          <span class="block kicker text-faint mb-1.5">Code immeuble · N° d'affaire</span>
+          <p id="d-code" class="text-[14px] font-mono text-ink/90"></p>
+        </div>
+      </div>
+
+      <div class="mt-5 max-w-xs">
+        <label class="block kicker text-muted mb-2" for="date-visite">Date de la visite</label>
+        <input type="date" id="date-visite" class="champ w-full h-12">
+      </div>
+
+      <div class="mt-5">
+        <span class="block kicker text-muted mb-2.5">Personnes présentes <span class="normal-case tracking-normal text-faint font-sans">(décochez les absents)</span></span>
+        <ul id="liste-contacts" class="grid sm:grid-cols-2 gap-2"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- 02 — LA NOTE VOCALE                                           -->
+  <!-- ============================================================= -->
+  <section class="card p-5 sm:p-6">
+    <div class="flex items-baseline gap-3 mb-5">
+      <span class="kicker text-accent">02</span>
+      <h2 class="font-display text-[19px] font-semibold leading-none">La note vocale</h2>
+      <span id="etat-note" class="ml-auto text-[12.5px] text-faint"></span>
+    </div>
+
+    <div class="grid sm:grid-cols-2 gap-3.5">
+      <!-- Enregistrer directement -->
+      <div class="rounded-[11px] border border-line p-5 flex flex-col items-center justify-center text-center bg-[#F8FBFE]">
+        <button id="btn-rec" class="rec-btn" aria-label="Démarrer l'enregistrement">
+          <svg id="ico-mic" class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+          <svg id="ico-stop" class="w-7 h-7 hidden" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>
+        </button>
+        <div id="chrono" class="mt-3 font-display font-semibold text-[19px] tabular-nums hidden">00:00</div>
+        <div id="onde" class="onde mt-2 hidden" aria-hidden="true"></div>
+        <p id="rec-aide" class="mt-3 text-[13.5px] text-muted leading-snug max-w-[220px]">Appuyez pour dicter votre note de visite.</p>
+      </div>
+
+      <!-- Déposer / choisir un fichier -->
+      <label id="drop-audio" class="depot p-5 flex flex-col items-center justify-center text-center cursor-pointer">
+        <svg class="w-7 h-7 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <p class="mt-2.5 text-[14.5px] font-medium">Déposer un fichier audio</p>
+        <p class="text-[12.5px] text-faint mt-0.5">.m4a, .mp3, .wav, .ogg — ou appuyez pour choisir</p>
+        <input type="file" id="input-audio" accept=".m4a,.mp3,.wav,.ogg,audio/*" class="hidden">
+      </label>
+    </div>
+
+    <!-- Lecteur + refaire -->
+    <div id="bloc-audio" class="hidden mt-4 flex items-center gap-3 flex-wrap">
+      <audio id="lecteur" controls class="flex-1 min-w-[200px] h-11"></audio>
+      <button id="btn-refaire" class="btn-fant px-4 h-11 text-[14px] flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        Refaire
+      </button>
+    </div>
+
+    <!-- Transcription éditable -->
+    <div id="bloc-transcription" class="hidden mt-5">
+      <div class="flex items-center justify-between mb-2">
+        <label class="kicker text-muted" for="txt-transcription">Transcription <span class="normal-case tracking-normal text-faint font-sans">(corrigez si besoin)</span></label>
+        <span id="etat-transcription" class="text-[12.5px] text-faint"></span>
+      </div>
+      <textarea id="txt-transcription" rows="6" class="champ w-full py-3 text-[15px] leading-relaxed resize-y" placeholder="Le texte transcrit apparaîtra ici…"></textarea>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- 03 — LES PHOTOS                                               -->
+  <!-- ============================================================= -->
+  <section class="card p-5 sm:p-6">
+    <div class="flex items-baseline gap-3 mb-1.5">
+      <span class="kicker text-accent">03</span>
+      <h2 class="font-display text-[19px] font-semibold leading-none">Les photos</h2>
+      <span id="etat-photos" class="ml-auto text-[12.5px] text-faint"></span>
+    </div>
+    <p class="text-[12.5px] text-faint mb-4">L'ordre des photos est celui du document. Réordonnez avec les flèches (ou par glisser sur ordinateur).</p>
+
+    <label id="drop-photos" class="depot p-6 flex flex-col items-center justify-center text-center cursor-pointer">
+      <svg class="w-7 h-7 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.6"/><polyline points="21 15 16 10 5 21"/></svg>
+      <p class="mt-2.5 text-[14.5px] font-medium">Déposer vos photos</p>
+      <p class="text-[12.5px] text-faint mt-0.5">iPhone (.heic) accepté — ou appuyez pour parcourir</p>
+      <input type="file" id="input-photos" accept="image/*,.heic" multiple class="hidden">
+    </label>
+
+    <div id="grille-photos" class="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div>
+  </section>
+
+</main>
+
+<!-- ================= BARRE D'ACTION ================= -->
+<div class="barre-action">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+    <p id="aide-generer" class="text-[12.5px] text-muted leading-snug sm:flex-1">Choisissez un immeuble et enregistrez une note vocale pour activer la génération.</p>
+    <button id="btn-generer" disabled
+      class="btn-primaire w-full sm:w-auto px-7 h-[52px] text-[15.5px] flex items-center justify-center gap-2.5 shrink-0">
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      Générer le compte rendu
+    </button>
+  </div>
+</div>
+
+<!-- ================= MODALE : PROGRESSION ================= -->
+<div id="modale-progression" class="hidden fixed inset-0 z-50 modale-fond flex items-center justify-center p-4">
+  <div class="card w-full max-w-md p-6 sm:p-7">
+    <h3 class="font-display text-[18px] font-semibold mb-6">Génération en cours</h3>
+    <ul id="etapes" class="space-y-4"></ul>
+  </div>
+</div>
+
+<!-- ================= MODALE : RÉSULTAT ================= -->
+<div id="modale-resultat" class="hidden fixed inset-0 z-50 modale-fond flex items-center justify-center p-4">
+  <div class="card w-full max-w-lg p-6 sm:p-7 max-h-[90vh] overflow-auto">
+    <div class="flex items-center gap-2.5 mb-5">
+      <svg class="w-7 h-7 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      <h3 class="font-display text-[20px] font-semibold">Compte rendu prêt</h3>
+    </div>
+
+    <!-- Garde-fou : points à compléter -->
+    <div id="bloc-points" class="hidden mb-5 rounded-xl border border-court/30 bg-[#FBF3E8] p-4">
+      <p class="font-display font-semibold text-court mb-1.5 flex items-center gap-2 text-[14.5px]">
+        <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        À vérifier avant d'envoyer
+      </p>
+      <p class="text-[13px] text-muted mb-3">Ces points n'étaient pas dans votre note. Confirmez-les pendant la relecture.</p>
+      <ul id="liste-points" class="space-y-2"></ul>
+    </div>
+
+    <div class="grid sm:grid-cols-3 gap-2.5">
+      <button id="btn-word" class="btn-primaire px-4 py-3 text-[14.5px] flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Ouvrir dans Word
+      </button>
+      <button id="btn-dossier" class="btn-fant px-4 py-3 text-[14.5px] flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Ouvrir le dossier
+      </button>
+      <button id="btn-nouveau" class="btn-fant px-4 py-3 text-[14.5px] flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Nouveau
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODALE : NOUVEL IMMEUBLE ================= -->
+<div id="modale-immeuble" class="hidden fixed inset-0 z-50 modale-fond flex items-center justify-center p-4">
+  <div class="card w-full max-w-lg p-6 sm:p-7 max-h-[90vh] overflow-auto">
+    <h3 class="font-display text-[18px] font-semibold mb-5">Nouvel immeuble</h3>
+    <div class="space-y-3.5">
+      <div class="grid sm:grid-cols-2 gap-3.5">
+        <div class="sm:col-span-2">
+          <label class="block kicker text-muted mb-1.5">Nom de l'immeuble *</label>
+          <input id="ni-sdc" class="champ w-full h-12" placeholder="SDC 12 RUE …">
+        </div>
+        <div>
+          <label class="block kicker text-muted mb-1.5">Code immeuble</label>
+          <input id="ni-code" class="champ w-full h-12">
+        </div>
+        <div>
+          <label class="block kicker text-muted mb-1.5">N° d'affaire</label>
+          <input id="ni-affaire" class="champ w-full h-12">
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block kicker text-muted mb-1.5">Adresse</label>
+          <input id="ni-adresse" class="champ w-full h-12">
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block kicker text-muted mb-1.5">Syndic (MOA)</label>
+          <input id="ni-moa" class="champ w-full h-12">
+        </div>
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <label class="kicker text-muted">Contacts</label>
+          <button id="ni-add-contact" class="text-[13.5px] text-accent hover:text-accent-ink font-medium">+ Ajouter un contact</button>
+        </div>
+        <div id="ni-contacts" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <div class="flex gap-2.5 justify-end mt-6">
+      <button id="ni-annuler" class="btn-fant px-4 py-2.5 text-[14.5px]">Annuler</button>
+      <button id="ni-enregistrer" class="btn-primaire px-5 py-2.5 text-[14.5px]">Enregistrer l'immeuble</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===================================================================
+//  ÉTAT DE L'APPLICATION
+//  Tout le travail en cours vit ici et est sauvegardé dans localStorage
+//  à chaque changement, pour survivre à une fermeture accidentelle.
+// ===================================================================
+const CLE_SAUVEGARDE = "cr_diag_wip";
+
+let chantiers = [];
+let etat = {
+  index: "",
+  date: aujourdhui(),
+  presents: {},
+  transcription: "",
+  photos: [],                   // [{ id, nom, dataUrl, legende }]
+};
+
+// Éléments audio (transitoires, non sauvegardés)
+let mediaRecorder = null, morceauxAudio = [], fluxMicro = null, typeEnreg = "";
+let minuteur = null, secondes = 0, audioCtx = null, analyser = null, animOnde = null;
+
+// ===================================================================
+//  UTILITAIRES
+// ===================================================================
+function $(id){ return document.getElementById(id); }
+function aujourdhui(){ return new Date().toISOString().slice(0,10); }
+function echapper(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function afficherErreur(msg){
+  $("banniere-txt").textContent = msg;
+  $("banniere").classList.remove("hidden");
+  window.scrollTo({ top:0, behavior:"smooth" });
+}
+function cacherBanniere(){ $("banniere").classList.add("hidden"); }
+
+function sauvegarder(){
+  try {
+    localStorage.setItem(CLE_SAUVEGARDE, JSON.stringify(etat));
+  } catch(e) {
+    // Quota dépassé (trop de photos) : on sauve au moins le texte et le chantier.
+    try {
+      const leger = { ...etat, photos: etat.photos.map(p => ({ ...p, dataUrl:"" })) };
+      localStorage.setItem(CLE_SAUVEGARDE, JSON.stringify(leger));
+    } catch(_) {}
+  }
+}
+
+async function dataUrlVersFile(dataUrl, nom){
+  const blob = await (await fetch(dataUrl)).blob();
+  return new File([blob], nom, { type: blob.type || "image/jpeg" });
+}
+function fileVersDataUrl(file){
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+// ===================================================================
+//  CHARGEMENT INITIAL
+// ===================================================================
+async function init(){
+  const brut = localStorage.getItem(CLE_SAUVEGARDE);
+  if (brut) { try { etat = { ...etat, ...JSON.parse(brut) }; } catch(_){} }
+
+  try {
+    chantiers = await (await fetch("/api/chantiers")).json();
+  } catch(e) {
+    afficherErreur("Impossible de charger la liste des immeubles. Le serveur est-il bien démarré ?");
+  }
+  remplirSelectChantiers();
+
+  $("select-chantier").value = etat.index || "";
+  if (etat.index !== "") majDetailsChantier();
+  $("date-visite").value = etat.date || aujourdhui();
+  if (etat.transcription) {
+    $("bloc-transcription").classList.remove("hidden");
+    $("txt-transcription").value = etat.transcription;
+  }
+  await rendrePhotos();
+  majEtats();
+  brancherEvenements();
+  avertirContexteMicro();
+}
+
+function remplirSelectChantiers(){
+  const sel = $("select-chantier");
+  sel.innerHTML = '<option value="">Choisir un immeuble</option>';
+  chantiers.forEach((c, i) => {
+    const o = document.createElement("option");
+    o.value = i;
+    o.textContent = `${c.sdc} — ${c.adresse || ""} ${c.code_immeuble ? "("+c.code_immeuble+")" : ""}`.trim();
+    sel.appendChild(o);
+  });
+}
+
+// ===================================================================
+//  01 — CHANTIER
+// ===================================================================
+function majDetailsChantier(){
+  const c = chantiers[etat.index];
+  if (!c) { $("details-chantier").classList.add("hidden"); return; }
+  $("details-chantier").classList.remove("hidden");
+  $("d-adresse").textContent = c.adresse || "—";
+  $("d-code").textContent = `${c.code_immeuble || "—"}  ·  ${c.n_affaire || "—"}`;
+
+  const ul = $("liste-contacts");
+  ul.innerHTML = "";
+  (c.contacts || []).forEach((ct, i) => {
+    if (etat.presents[i] === undefined) etat.presents[i] = true;
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <label class="flex items-center gap-3 cursor-pointer rounded-xl border border-line px-3 py-2.5 hover:border-line-2 transition">
+        <input type="checkbox" data-contact="${i}" ${etat.presents[i] ? "checked" : ""} class="chk shrink-0">
+        <span class="text-[14px] leading-tight min-w-0">
+          <span class="font-display font-medium block truncate">${echapper(ct.organisme || ct.groupe || "")}</span>
+          <span class="text-muted text-[13px] block truncate">${echapper(ct.nom || "")}</span>
+        </span>
+      </label>`;
+    ul.appendChild(li);
+  });
+  ul.querySelectorAll("input[data-contact]").forEach(chk => {
+    chk.addEventListener("change", e => {
+      etat.presents[e.target.dataset.contact] = e.target.checked;
+      sauvegarder();
+    });
+  });
+}
+
+// ===================================================================
+//  02 — NOTE VOCALE : enregistrement (compatible ordi / tablette / mobile)
+// ===================================================================
+
+// iOS/Safari n'enregistre pas en webm : on demande à MediaRecorder le
+// premier format qu'il sait produire, et on garde son type MIME réel.
+function typeAudioSupporte(){
+  if (!("MediaRecorder" in window) || !MediaRecorder.isTypeSupported) return "";
+  for (const t of ["audio/webm;codecs=opus","audio/webm","audio/mp4","audio/aac","audio/ogg"]) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return "";
+}
+function extensionDepuisType(t){
+  t = (t || "").toLowerCase();
+  if (t.includes("mp4") || t.includes("aac") || t.includes("m4a")) return "m4a";
+  if (t.includes("ogg")) return "ogg";
+  if (t.includes("wav")) return "wav";
+  return "webm";
+}
+
+// L'accès au micro exige un « contexte sécurisé » : localhost, ou HTTPS.
+// Sur téléphone/tablette via l'adresse réseau du PC (http://192.168…),
+// le navigateur bloque le micro : on l'explique et on garde le dépôt de fichier.
+function avertirContexteMicro(){
+  const local = ["localhost","127.0.0.1","::1"].includes(location.hostname);
+  if (!window.isSecureContext && !local){
+    $("btn-rec").disabled = true;
+    $("btn-rec").classList.add("opacity-40","cursor-not-allowed");
+    $("rec-aide").innerHTML =
+      "Sur téléphone ou tablette via le réseau, l'enregistrement direct est bloqué par le navigateur.<br>"
+      + "Utilisez « Déposer un fichier audio » : le dictaphone du téléphone s'ouvrira.";
+  }
+}
+
+async function basculerEnregistrement(){
+  if (mediaRecorder && mediaRecorder.state === "recording") { arreterEnregistrement(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    afficherErreur("Ce navigateur ne permet pas l'enregistrement direct. Utilisez « Déposer un fichier audio ».");
+    return;
+  }
+  try {
+    fluxMicro = await navigator.mediaDevices.getUserMedia({ audio:true });
+  } catch(e){
+    afficherErreur("Le micro n'est pas autorisé. Cliquez sur l'icône de cadenas à gauche de l'adresse, "
+      + "autorisez le microphone pour ce site, puis réessayez.");
+    return;
+  }
+  morceauxAudio = [];
+  typeEnreg = typeAudioSupporte();
+  try {
+    mediaRecorder = typeEnreg ? new MediaRecorder(fluxMicro, { mimeType: typeEnreg })
+                              : new MediaRecorder(fluxMicro);
+  } catch(_) {
+    mediaRecorder = new MediaRecorder(fluxMicro);
+  }
+  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) morceauxAudio.push(e.data); };
+  mediaRecorder.onstop = finEnregistrement;
+  mediaRecorder.start();
+
+  $("btn-rec").classList.add("pulse-rec","enreg");
+  $("ico-mic").classList.add("hidden");
+  $("ico-stop").classList.remove("hidden");
+  $("chrono").classList.remove("hidden");
+  $("onde").classList.remove("hidden");
+  $("onde").classList.add("flex");
+  $("rec-aide").textContent = "Enregistrement… appuyez pour arrêter.";
+  demarrerMinuteur();
+  demarrerOnde();
+}
+
+function arreterEnregistrement(){
+  if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
+}
+
+function finEnregistrement(){
+  arreterMinuteur();
+  arreterOnde();
+  if (fluxMicro) fluxMicro.getTracks().forEach(t => t.stop());
+  $("btn-rec").classList.remove("pulse-rec","enreg");
+  $("ico-mic").classList.remove("hidden");
+  $("ico-stop").classList.add("hidden");
+  $("onde").classList.add("hidden");
+  $("onde").classList.remove("flex");
+  $("rec-aide").textContent = "Appuyez pour ré-enregistrer.";
+
+  if (secondes < 5){
+    afficherErreur("L'enregistrement semble vide (moins de 5 secondes). Réessayez en parlant plus longtemps.");
+    $("chrono").classList.add("hidden");
+    return;
+  }
+  const type = (mediaRecorder && mediaRecorder.mimeType) || typeEnreg || "audio/webm";
+  const ext  = extensionDepuisType(type);
+  const blob = new Blob(morceauxAudio, { type });
+  const nom  = "note." + ext;
+  presenterAudio(blob, nom);
+  transcrire(blob, nom);
+}
+
+function demarrerMinuteur(){
+  secondes = 0; $("chrono").textContent = "00:00";
+  minuteur = setInterval(() => {
+    secondes++;
+    const m = String(Math.floor(secondes/60)).padStart(2,"0");
+    const s = String(secondes%60).padStart(2,"0");
+    $("chrono").textContent = `${m}:${s}`;
+  }, 1000);
+}
+function arreterMinuteur(){ clearInterval(minuteur); }
+
+// Forme d'onde animée à partir du niveau réel du micro.
+function demarrerOnde(){
+  const onde = $("onde");
+  onde.innerHTML = "";
+  const N = 13;
+  for (let i=0;i<N;i++) onde.appendChild(document.createElement("span"));
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 64;
+    audioCtx.createMediaStreamSource(fluxMicro).connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const barres = [...onde.children];
+    (function boucle(){
+      analyser.getByteFrequencyData(data);
+      barres.forEach((b,i) => {
+        const v = data[i*2] || 0;
+        b.style.height = Math.max(6, (v/255)*30) + "px";
+        b.style.animation = "none";
+      });
+      animOnde = requestAnimationFrame(boucle);
+    })();
+  } catch(_){ /* pas de Web Audio : l'animation CSS par défaut suffit */ }
+}
+function arreterOnde(){
+  if (animOnde) cancelAnimationFrame(animOnde);
+  if (audioCtx) { try { audioCtx.close(); } catch(_){} audioCtx = null; }
+}
+
+// ===================================================================
+//  02 — NOTE VOCALE : fichier déposé + transcription
+// ===================================================================
+function presenterAudio(blob, nom){
+  $("lecteur").src = URL.createObjectURL(blob);
+  $("bloc-audio").classList.remove("hidden");
+}
+
+async function transcrire(blob, nom){
+  $("bloc-transcription").classList.remove("hidden");
+  $("etat-transcription").textContent = "Transcription en cours…";
+  $("txt-transcription").disabled = true;
+  const fd = new FormData();
+  fd.append("audio", blob, nom);
+  try {
+    const r = await fetch("/api/transcrire", { method:"POST", body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Échec de la transcription.");
+    $("txt-transcription").value = data.transcription;
+    etat.transcription = data.transcription;
+    $("etat-transcription").textContent = `Transcrit (${data.duree}s) — relisez et corrigez si besoin.`;
+    sauvegarder();
+  } catch(e){
+    $("etat-transcription").textContent = "";
+    afficherErreur(e.message || "La transcription a échoué.");
+  } finally {
+    $("txt-transcription").disabled = false;
+    majEtats();
+  }
+}
+
+// ===================================================================
+//  03 — PHOTOS
+// ===================================================================
+async function ajouterPhotos(fileList){
+  for (const f of fileList){
+    if (!f.type.startsWith("image/") && !/\.heic$/i.test(f.name)) continue;
+    let dataUrl = "";
+    try { dataUrl = await fileVersDataUrl(f); } catch(_){}
+    etat.photos.push({ id: crypto.randomUUID(), nom: f.name, dataUrl, legende:"" });
+  }
+  await rendrePhotos();
+  sauvegarder();
+  majEtats();
+}
+
+async function rendrePhotos(){
+  const g = $("grille-photos");
+  g.innerHTML = "";
+  etat.photos.forEach((ph, i) => {
+    const carte = document.createElement("div");
+    carte.className = "photo-carte";
+    carte.draggable = true;
+    carte.dataset.index = i;
+    const derniere = i === etat.photos.length - 1;
+    carte.innerHTML = `
+      <div class="relative">
+        <img src="${ph.dataUrl}" alt="" class="w-full h-28 object-cover bg-[#E8EFF7]">
+        <span class="absolute top-1.5 left-1.5 font-display text-[11px] font-medium bg-ink/75 text-paper px-1.5 py-0.5 rounded">N° ${i+1}</span>
+        <button data-suppr="${ph.id}" class="absolute top-1.5 right-1.5 w-7 h-7 min-h-0 rounded-full bg-ink/70 text-white flex items-center justify-center hover:bg-urgent transition" aria-label="Supprimer">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <div class="absolute bottom-1.5 right-1.5 flex gap-1">
+          <button data-move="${i}" data-sens="-1" ${i===0?"disabled":""} class="w-7 h-7 min-h-0 rounded-md bg-ink/70 text-white flex items-center justify-center disabled:opacity-30 hover:bg-accent transition" aria-label="Déplacer avant">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <button data-move="${i}" data-sens="1" ${derniere?"disabled":""} class="w-7 h-7 min-h-0 rounded-md bg-ink/70 text-white flex items-center justify-center disabled:opacity-30 hover:bg-accent transition" aria-label="Déplacer après">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+        </div>
+      </div>
+      <input type="text" data-legende="${ph.id}" value="${echapper(ph.legende||"")}"
+        placeholder="légende facultative"
+        class="w-full text-[13px] px-2.5 py-2 border-t border-line outline-none focus:bg-accent-soft/40" style="min-height:40px">`;
+    g.appendChild(carte);
+  });
+
+  g.querySelectorAll("[data-suppr]").forEach(b => b.addEventListener("click", () => {
+    etat.photos = etat.photos.filter(p => p.id !== b.dataset.suppr);
+    rendrePhotos(); sauvegarder(); majEtats();
+  }));
+  g.querySelectorAll("[data-move]").forEach(b => b.addEventListener("click", () => {
+    deplacerPhoto(+b.dataset.move, +b.dataset.sens);
+  }));
+  g.querySelectorAll("[data-legende]").forEach(inp => inp.addEventListener("input", () => {
+    const p = etat.photos.find(x => x.id === inp.dataset.legende);
+    if (p) { p.legende = inp.value; sauvegarder(); }
+  }));
+  brancherReordonnancement(g);
+}
+
+// Réordonnancement au doigt (flèches) — fonctionne partout, tablette comprise.
+function deplacerPhoto(i, sens){
+  const j = i + sens;
+  if (j < 0 || j >= etat.photos.length) return;
+  const [item] = etat.photos.splice(i, 1);
+  etat.photos.splice(j, 0, item);
+  rendrePhotos(); sauvegarder();
+}
+
+// Réordonnancement par glisser-déposer (bonus sur ordinateur).
+let idxGlisse = null;
+function brancherReordonnancement(g){
+  g.querySelectorAll("[data-index]").forEach(carte => {
+    carte.addEventListener("dragstart", () => { idxGlisse = +carte.dataset.index; carte.classList.add("glisse"); });
+    carte.addEventListener("dragend",   () => carte.classList.remove("glisse"));
+    carte.addEventListener("dragover",  e => e.preventDefault());
+    carte.addEventListener("drop", e => {
+      e.preventDefault();
+      const cible = +carte.dataset.index;
+      if (idxGlisse === null || idxGlisse === cible) return;
+      const [item] = etat.photos.splice(idxGlisse, 1);
+      etat.photos.splice(cible, 0, item);
+      idxGlisse = null;
+      rendrePhotos(); sauvegarder();
+    });
+  });
+}
+
+// ===================================================================
+//  ÉTATS (résumés de section) + activation du bouton
+// ===================================================================
+function majEtats(){
+  const c = chantiers[etat.index];
+  $("etat-chantier").textContent = c ? "Sélectionné" : "";
+  const t = $("txt-transcription").value.trim();
+  $("etat-note").textContent = t ? `${t.split(/\s+/).length} mots` : "";
+  const n = etat.photos.length;
+  $("etat-photos").textContent = n ? `${n} photo${n>1?"s":""}` : "";
+
+  const pret = etat.index !== "" && t.length > 0;
+  $("btn-generer").disabled = !pret;
+  $("aide-generer").classList.toggle("hidden", pret);
+}
+
+// Étapes de progression (jamais de spinner anonyme).
+const ETAPES = [
+  ["transcription", "Transcription de la note vocale"],
+  ["analyse",       "Analyse et rédaction"],
+  ["miseenpage",    "Mise en page dans le template"],
+  ["pret",          "Compte rendu prêt"],
+];
+function rendreEtapes(statuts){
+  const ul = $("etapes");
+  ul.innerHTML = "";
+  ETAPES.forEach(([cle, libelle]) => {
+    const st = statuts[cle] || "attente";
+    let ico;
+    if (st === "fait") ico = `<svg class="w-[22px] h-[22px] text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+    else if (st === "cours") ico = `<svg class="w-[22px] h-[22px] text-accent spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+    else ico = `<span class="w-[22px] h-[22px] rounded-full border-2 border-line block"></span>`;
+    const li = document.createElement("li");
+    li.className = "flex items-center gap-3 " + (st==="attente" ? "text-faint" : "text-ink");
+    li.innerHTML = `<span class="shrink-0 w-6 flex justify-center">${ico}</span><span class="text-[15px] ${st==='cours'?'font-medium':''}">${libelle}</span>`;
+    ul.appendChild(li);
+  });
+}
+
+async function generer(){
+  cacherBanniere();
+  const c = chantiers[etat.index];
+  const fiche = {
+    sdc: c.sdc, adresse: c.adresse || "", code_immeuble: c.code_immeuble || "",
+    n_affaire: c.n_affaire || "", moa: c.moa || "",
+    date_visite: $("date-visite").value || aujourdhui(),
+    contacts: (c.contacts || []).map((ct, i) => ({ ...ct, present: !!etat.presents[i] })),
+  };
+
+  $("modale-progression").classList.remove("hidden");
+  rendreEtapes({ transcription:"fait", analyse:"cours" });
+
+  const fd = new FormData();
+  fd.append("chantier", JSON.stringify(fiche));
+  fd.append("transcription", $("txt-transcription").value);
+  fd.append("legendes", JSON.stringify(etat.photos.map(p => p.legende || "")));
+  for (const ph of etat.photos){
+    const file = await dataUrlVersFile(ph.dataUrl, ph.nom);
+    fd.append("photos", file, ph.nom);
+  }
+
+  try {
+    const r = await fetch("/api/generer", { method:"POST", body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "La génération a échoué.");
+    rendreEtapes({ transcription:"fait", analyse:"fait", miseenpage:"fait", pret:"cours" });
+    await new Promise(res => setTimeout(res, 350));
+    rendreEtapes({ transcription:"fait", analyse:"fait", miseenpage:"fait", pret:"fait" });
+    await new Promise(res => setTimeout(res, 250));
+    $("modale-progression").classList.add("hidden");
+    afficherResultat(data);
+  } catch(e){
+    $("modale-progression").classList.add("hidden");
+    afficherErreur(e.message);   // transcription et photos restent en place
+  }
+}
+
+let dernierResultat = null;
+function afficherResultat(data){
+  dernierResultat = data;
+  const pts = data.points_a_completer || [];
+  if (pts.length){
+    $("bloc-points").classList.remove("hidden");
+    const ul = $("liste-points");
+    ul.innerHTML = "";
+    pts.forEach(p => {
+      const li = document.createElement("li");
+      li.innerHTML = `<label class="flex items-start gap-2.5 cursor-pointer text-[14px] leading-snug">
+        <input type="checkbox" class="chk mt-0.5 shrink-0"><span>${echapper(p)}</span></label>`;
+      ul.appendChild(li);
+    });
+  } else {
+    $("bloc-points").classList.add("hidden");
+  }
+  $("modale-resultat").classList.remove("hidden");
+}
+
+async function deconnexion(){
+  try { await fetch("/api/logout", { method:"POST" }); } catch(_){}
+  window.location.href = "/login";
+}
+
+async function ouvrirChemin(chemin){
+  const fd = new FormData();
+  fd.append("chemin", chemin);
+  try {
+    const r = await fetch("/api/ouvrir", { method:"POST", body: fd });
+    if (!r.ok){ const d = await r.json(); throw new Error(d.detail); }
+  } catch(e){ afficherErreur(e.message || "Impossible d'ouvrir le fichier."); }
+}
+
+function nouveauCompteRendu(){
+  $("modale-resultat").classList.add("hidden");
+  etat.transcription = "";
+  etat.photos = [];
+  $("txt-transcription").value = "";
+  $("bloc-transcription").classList.add("hidden");
+  $("bloc-audio").classList.add("hidden");
+  $("chrono").classList.add("hidden");
+  rendrePhotos();
+  sauvegarder();
+  majEtats();
+  window.scrollTo({ top:0, behavior:"smooth" });
+}
+
+// ===================================================================
+//  MODALE NOUVEL IMMEUBLE
+// ===================================================================
+function ajouterLigneContact(pre = {}){
+  const div = document.createElement("div");
+  div.className = "grid grid-cols-12 gap-2 items-center";
+  div.innerHTML = `
+    <div class="select-wrap col-span-3">
+      <select class="champ w-full h-11 text-[13.5px]" data-champ="groupe">
+        <option value="MOA">MOA</option><option value="MOE">MOE</option>
+      </select>
+    </div>
+    <input class="champ col-span-3 h-11 text-[13.5px]" placeholder="Organisme" data-champ="organisme" value="${echapper(pre.organisme||"")}">
+    <input class="champ col-span-5 h-11 text-[13.5px]" placeholder="Nom" data-champ="nom" value="${echapper(pre.nom||"")}">
+    <button class="col-span-1 text-muted hover:text-urgent flex justify-center" aria-label="Retirer">
+      <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>`;
+  if (pre.groupe) div.querySelector('[data-champ="groupe"]').value = pre.groupe;
+  div.querySelector("button").addEventListener("click", () => div.remove());
+  $("ni-contacts").appendChild(div);
+}
+
+function ouvrirModaleImmeuble(){
+  ["ni-sdc","ni-code","ni-adresse","ni-affaire","ni-moa"].forEach(id => $(id).value = "");
+  $("ni-contacts").innerHTML = "";
+  ajouterLigneContact({ groupe:"MOA", organisme:"SYNDIC" });
+  $("modale-immeuble").classList.remove("hidden");
+}
+
+async function enregistrerImmeuble(){
+  const sdc = $("ni-sdc").value.trim();
+  if (!sdc){ afficherErreur("Le nom de l'immeuble est obligatoire."); return; }
+  const contacts = [...$("ni-contacts").children].map(div => {
+    const g = {};
+    div.querySelectorAll("[data-champ]").forEach(el => g[el.dataset.champ] = el.value.trim());
+    return { groupe:g.groupe||"MOA", organisme:g.organisme||"", nom:g.nom||"", telephone:"", email:"" };
+  }).filter(c => c.organisme || c.nom);
+
+  const nouveau = {
+    sdc, adresse:$("ni-adresse").value.trim(), code_immeuble:$("ni-code").value.trim(),
+    n_affaire:$("ni-affaire").value.trim(), moa:$("ni-moa").value.trim(), contacts,
+  };
+  const fd = new FormData();
+  fd.append("chantier", JSON.stringify(nouveau));
+  try {
+    const r = await fetch("/api/chantiers", { method:"POST", body: fd });
+    if (!r.ok){ const d = await r.json(); throw new Error(d.detail); }
+    chantiers.push(nouveau);
+    remplirSelectChantiers();
+    etat.index = String(chantiers.length - 1);
+    etat.presents = {};
+    $("select-chantier").value = etat.index;
+    majDetailsChantier();
+    $("modale-immeuble").classList.add("hidden");
+    sauvegarder();
+    majEtats();
+  } catch(e){ afficherErreur(e.message || "Enregistrement impossible."); }
+}
+
+// ===================================================================
+//  BRANCHEMENT DES ÉVÉNEMENTS
+// ===================================================================
+function brancherEvenements(){
+  $("select-chantier").addEventListener("change", e => {
+    etat.index = e.target.value;
+    etat.presents = {};
+    majDetailsChantier();
+    sauvegarder(); majEtats();
+  });
+  $("date-visite").addEventListener("change", e => { etat.date = e.target.value; sauvegarder(); });
+
+  $("btn-rec").addEventListener("click", basculerEnregistrement);
+  $("btn-refaire").addEventListener("click", () => {
+    $("bloc-audio").classList.add("hidden");
+    $("chrono").classList.add("hidden");
+    basculerEnregistrement();
+  });
+
+  $("input-audio").addEventListener("change", e => {
+    if (e.target.files[0]){ const f = e.target.files[0]; presenterAudio(f, f.name); transcrire(f, f.name); }
+  });
+  brancherGlisser($("drop-audio"), files => {
+    if (files[0]){ const f = files[0]; presenterAudio(f, f.name); transcrire(f, f.name); }
+  });
+
+  $("txt-transcription").addEventListener("input", e => {
+    etat.transcription = e.target.value; sauvegarder(); majEtats();
+  });
+
+  $("input-photos").addEventListener("change", e => ajouterPhotos(e.target.files));
+  brancherGlisser($("drop-photos"), files => ajouterPhotos(files));
+
+  $("btn-generer").addEventListener("click", generer);
+  $("btn-word").addEventListener("click", () => dernierResultat && ouvrirChemin(dernierResultat.docx));
+  $("btn-dossier").addEventListener("click", () => dernierResultat && ouvrirChemin(dernierResultat.dossier));
+  $("btn-nouveau").addEventListener("click", nouveauCompteRendu);
+
+  $("btn-deconnexion").addEventListener("click", deconnexion);
+  $("btn-nouvel-immeuble").addEventListener("click", ouvrirModaleImmeuble);
+  $("ni-add-contact").addEventListener("click", () => ajouterLigneContact());
+  $("ni-annuler").addEventListener("click", () => $("modale-immeuble").classList.add("hidden"));
+  $("ni-enregistrer").addEventListener("click", enregistrerImmeuble);
+
+  // Fermer une modale en cliquant sur le fond sombre.
+  ["modale-immeuble","modale-resultat"].forEach(id => {
+    $(id).addEventListener("click", e => { if (e.target.id === id) $(id).classList.add("hidden"); });
+  });
+}
+
+// Glisser-déposer générique sur une zone.
+function brancherGlisser(zone, onFichiers){
+  ["dragenter","dragover"].forEach(ev => zone.addEventListener(ev, e => {
+    e.preventDefault(); zone.classList.add("depot--survol");
+  }));
+  ["dragleave","drop"].forEach(ev => zone.addEventListener(ev, e => {
+    e.preventDefault(); zone.classList.remove("depot--survol");
+  }));
+  zone.addEventListener("drop", e => { if (e.dataTransfer.files.length) onFichiers(e.dataTransfer.files); });
+}
+
+init();
+</script>
+</body>
+</html>
