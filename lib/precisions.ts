@@ -48,3 +48,25 @@ export function precisionIntegree(precision: string, donnees: unknown): boolean 
 export function precisionsOubliees(saisies: string[], donnees: unknown): string[] {
   return saisies.filter((p) => !precisionIntegree(p, donnees));
 }
+
+/** Une phrase propre : majuscule initiale et ponctuation finale. */
+function enPhrase(texte: string): string {
+  const t = texte.trim().replace(/\s+/g, " ");
+  if (!t) return "";
+  const debut = t[0].toUpperCase() + t.slice(1);
+  return /[.!?…]$/.test(debut) ? debut : debut + ".";
+}
+
+/**
+ * Le paragraphe à ajouter aux généralités pour les précisions que le modèle a
+ * laissées de côté. L'architecte saisit souvent un fragment (« 3 lots ») : posé
+ * tel quel entre deux paragraphes rédigés, il passe pour une coquille. Une
+ * amorce explicite le rattache au document et le rend lisible, qu'il s'agisse
+ * d'un fragment ou d'une phrase complète.
+ */
+export function paragraphePrecisions(oubliees: string[]): string {
+  const phrases = oubliees.map(enPhrase).filter(Boolean);
+  if (!phrases.length) return "";
+  const amorce = phrases.length > 1 ? "Précisions apportées par l'architecte" : "Précision apportée par l'architecte";
+  return `${amorce} : ${phrases.join(" ")}`;
+}

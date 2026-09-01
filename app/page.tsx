@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { lireChantiers, ecrireChantiers } from "@/lib/chantiers";
 import { compresser } from "@/lib/photos";
 import { avecMoe, MOE_VIDE } from "@/lib/moe";
-import { precisionsOubliees } from "@/lib/precisions";
+import { paragraphePrecisions, precisionsOubliees } from "@/lib/precisions";
 import type { Chantier, Contact } from "@/lib/types";
 
 interface PhotoUI {
@@ -520,7 +520,7 @@ export default function OutilPage() {
         if (oubliees.length) {
           donneesFinales = {
             ...donneesFinales,
-            generalites: [...(donneesFinales.generalites || []), ...oubliees],
+            generalites: [...(donneesFinales.generalites || []), paragraphePrecisions(oubliees)],
           };
         }
       }
