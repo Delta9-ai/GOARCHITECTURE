@@ -31,17 +31,32 @@ function motsPorteurs(texte: string): string[] {
   );
 }
 
+// Une précision reformulée reste groupée dans une phrase ou deux ; des mots
+// éparpillés d'un bout à l'autre du compte rendu ne prouvent rien.
+const FENETRE = 40; // mots
+
 /**
  * La précision se retrouve-t-elle dans le compte rendu rédigé ?
+ *
  * On tolère la reformulation — l'IA monte en registre, elle ne recopie pas —
- * en se contentant d'une majorité de mots porteurs retrouvés.
+ * mais on exige que les mots se retrouvent **groupés** : chercher dans tout le
+ * document donnait de fausses détections. « Devis attendu pour le 8 septembre »
+ * était jugée présente parce que « devis » figurait dans une observation et
+ * « septembre » dans une autre, à dix lignes de là.
+ *
+ * Une précision courte doit se retrouver en entier ; au-delà de trois mots
+ * porteurs, une majorité suffit, la reformulation en perdant toujours quelques-uns.
  */
 export function precisionIntegree(precision: string, donnees: unknown): boolean {
   const mots = motsPorteurs(precision);
   if (!mots.length) return true;
-  const redige = normaliser(JSON.stringify(donnees ?? ""));
-  const retrouves = mots.filter((m) => redige.includes(m)).length;
-  return retrouves / mots.length >= 0.6;
+  const requis = mots.length <= 3 ? mots.length : Math.ceil(mots.length * 0.6);
+  const jetons = normaliser(JSON.stringify(donnees ?? "")).split(" ").filter(Boolean);
+  for (let i = 0; i < Math.max(jetons.length - 1, 1); i++) {
+    const fenetre = " " + jetons.slice(i, i + FENETRE).join(" ") + " ";
+    if (mots.filter((m) => fenetre.includes(m)).length >= requis) return true;
+  }
+  return false;
 }
 
 /** Celles que le modèle a laissées de côté, dans l'ordre de saisie. */
