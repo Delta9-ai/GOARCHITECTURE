@@ -797,9 +797,12 @@ export default function OutilPage() {
                 <span className="block kicker text-muted mb-2.5">
                   Personnes présentes <span className="normal-case tracking-normal text-faint font-sans">(décochez les absents)</span>
                 </span>
-                <ul className="grid sm:grid-cols-2 gap-2">
+                {/* grid-cols-1 et min-w-0 : sans colonne explicite, la grille prenait la
+                    largeur du nom le plus long (« …, architecte de copropriété ») et
+                    débordait de l'écran du téléphone, emportant toute la page avec elle. */}
+                <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {(chantierCourant.contacts || []).map((ct, i) => (
-                    <li key={i}>
+                    <li key={i} className="min-w-0">
                       <label className="flex items-center gap-3 cursor-pointer rounded-xl border border-line px-3 py-2.5 hover:border-line-2 transition">
                         <input
                           type="checkbox" className="chk shrink-0"
