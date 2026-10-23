@@ -10,8 +10,18 @@ const secrete = () => process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
 export const MDP_MIN = 8;
 
+/** Supabase est configuré : sert au stockage des réglages IA. */
 export function supabaseActif(): boolean {
   return Boolean(base() && anon() && secrete());
+}
+
+/**
+ * Les comptes Supabase remplacent la connexion par AUTH_EMAIL / AUTH_PASSWORD_HASH.
+ * Interrupteur séparé (COMPTES_SUPABASE=1) : on peut activer les réglages IA en ligne
+ * sans basculer la connexion, tant que les comptes ne sont pas créés.
+ */
+export function comptesActifs(): boolean {
+  return supabaseActif() && process.env.COMPTES_SUPABASE === "1";
 }
 
 export type Utilisateur = { id: string; email: string };

@@ -1,11 +1,11 @@
 // POST /api/reinitialiser — pose le nouveau mot de passe avec le jeton du lien reçu par e-mail.
 import { NextResponse } from "next/server";
-import { MDP_MIN, reinitialiserAvecJeton, supabaseActif } from "@/lib/supabase";
+import { MDP_MIN, reinitialiserAvecJeton, comptesActifs } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  if (!supabaseActif()) {
+  if (!comptesActifs()) {
     return NextResponse.json({ detail: "La réinitialisation n'est pas activée sur cette installation." }, { status: 501 });
   }
   const corps = await req.json().catch(() => ({}));

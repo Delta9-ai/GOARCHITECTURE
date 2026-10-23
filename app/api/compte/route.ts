@@ -4,7 +4,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { COOKIE, OPTIONS_COOKIE, lireSession, signerSession } from "@/lib/session";
-import { MDP_MIN, modifierCompte, supabaseActif, verifierIdentifiants } from "@/lib/supabase";
+import { MDP_MIN, modifierCompte, comptesActifs, verifierIdentifiants } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
@@ -16,13 +16,13 @@ async function sessionCompte() {
 }
 
 export async function GET() {
-  if (!supabaseActif()) return NextResponse.json({ actif: false });
+  if (!comptesActifs()) return NextResponse.json({ actif: false });
   const s = await sessionCompte();
   return NextResponse.json({ actif: true, email: s?.email ?? null });
 }
 
 export async function POST(req: Request) {
-  if (!supabaseActif()) return erreur("La gestion du compte n'est pas activée sur cette installation.", 501);
+  if (!comptesActifs()) return erreur("La gestion du compte n'est pas activée sur cette installation.", 501);
   const s = await sessionCompte();
   if (!s) return erreur("Reconnectez-vous pour modifier votre compte.", 401);
 

@@ -26,7 +26,10 @@ type Stocke = {
 };
 
 const BUCKET = "reglages";
-const OBJET = "reglages-ia.json";
+// Un fichier par environnement : les essais en local ne touchent jamais aux réglages
+// (prompts, clés) de l'outil en ligne. Les clés sont d'ailleurs chiffrées avec le
+// SESSION_SECRET de chaque environnement, illisibles de l'un à l'autre.
+const OBJET = process.env.VERCEL_ENV === "production" ? "reglages-ia.json" : `reglages-ia-${process.env.VERCEL_ENV || "local"}.json`;
 const base = () => (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/\/+$/, "");
 const entetes = () => {
   const k = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";

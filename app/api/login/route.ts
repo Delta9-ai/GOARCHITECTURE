@@ -1,10 +1,10 @@
 // POST /api/login — vérifie les identifiants et pose le cookie de session.
-// Avec Supabase configuré, ce sont les comptes Supabase qui font foi (mot de passe
-// modifiable depuis l'outil). Sinon, repli sur AUTH_EMAIL / AUTH_PASSWORD_HASH.
+// Comptes Supabase activés (COMPTES_SUPABASE=1) : ce sont eux qui font foi (mot de
+// passe modifiable depuis l'outil). Sinon, connexion par AUTH_EMAIL / AUTH_PASSWORD_HASH.
 import { NextResponse } from "next/server";
 import { verifierMdp, comparerConstante } from "@/lib/password";
 import { signerSession, COOKIE, OPTIONS_COOKIE, type InfosSession } from "@/lib/session";
-import { supabaseActif, verifierIdentifiants } from "@/lib/supabase";
+import { comptesActifs, verifierIdentifiants } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
 
   let infos: InfosSession | null = null;
 
-  if (supabaseActif()) {
+  if (comptesActifs()) {
     const u = email && mdp ? await verifierIdentifiants(email, mdp) : null;
     if (u) infos = { sub: u.id, email: u.email };
   } else {
