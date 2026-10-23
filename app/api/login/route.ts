@@ -1,7 +1,10 @@
 // POST /api/login — vérifie les identifiants et pose le cookie de session.
+// Avec Supabase configuré, ce sont les comptes Supabase qui font foi (mot de passe
+// modifiable depuis l'outil). Sinon, repli sur AUTH_EMAIL / AUTH_PASSWORD_HASH.
 import { NextResponse } from "next/server";
 import { verifierMdp, comparerConstante } from "@/lib/password";
-import { signerSession, COOKIE, DUREE_SESSION } from "@/lib/session";
+import { signerSession, COOKIE, OPTIONS_COOKIE, type InfosSession } from "@/lib/session";
+import { supabaseActif, verifierIdentifiants } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
@@ -10,23 +13,25 @@ export async function POST(req: Request) {
   const email = String(form.get("email") ?? "").trim().toLowerCase();
   const mdp = String(form.get("mdp") ?? "");
 
-  const emailOk = comparerConstante(email, (process.env.AUTH_EMAIL ?? "").trim().toLowerCase());
-  const mdpOk = verifierMdp(mdp, process.env.AUTH_PASSWORD_HASH ?? "");
+  let infos: InfosSession | null = null;
 
-  // On évalue toujours les deux (pas de court-circuit) pour ne pas révéler
-  // par le temps de réponse lequel est faux, + délai anti-force-brute.
-  if (!(emailOk && mdpOk)) {
-    await new Promise((r) => setTimeout(r, 500));
+  if (supabaseActif()) {
+    const u = email && mdp ? await verifierIdentifiants(email, mdp) : null;
+    if (u) infos = { sub: u.id, email: u.email };
+  } else {
+    const emailOk = comparerConstante(email, (process.env.AUTH_EMAIL ?? "").trim().toLowerCase());
+    const mdpOk = verifierMdp(mdp, process.env.AUTH_PASSWORD_HASH ?? "");
+    // On évalue toujours les deux (pas de court-circuit) pour ne pas révéler
+    // par le temps de réponse lequel est faux.
+    if (emailOk && mdpOk) infos = { email };
+  }
+
+  if (!infos) {
+    await new Promise((r) => setTimeout(r, 500)); // délai anti-force-brute
     return NextResponse.json({ detail: "E-mail ou mot de passe incorrect." }, { status: 401 });
   }
 
   const res = NextResponse.json({ ok: true });
-  res.cookies.set(COOKIE, await signerSession(), {
-    httpOnly: true,
-    sameSite: "strict",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: DUREE_SESSION,
-  });
+  res.cookies.set(COOKIE, await signerSession(infos), OPTIONS_COOKIE);
   return res;
 }

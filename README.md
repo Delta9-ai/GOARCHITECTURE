@@ -43,8 +43,8 @@ identité de l'immeuble (nom, code, n° d'affaire, adresse, syndic) et participa
 modifiée ou supprimée depuis l'écran principal, et la présence des participants se
 coche réunion par réunion.
 
-La bibliothèque vit dans le **localStorage du navigateur** (`lib/chantiers.ts`), amorcée
-au premier lancement par `data/chantiers.default.json`. Elle n'est donc pas partagée
+La bibliothèque vit dans le **localStorage du navigateur** (`lib/chantiers.ts`) et
+démarre vide. Elle n'est donc pas partagée
 entre appareils : aucune base de données, aucun service externe.
 
 ## Confidentialité (par conception)

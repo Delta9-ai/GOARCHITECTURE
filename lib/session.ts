@@ -13,8 +13,11 @@ function cle(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
-export async function signerSession(): Promise<string> {
-  return new SignJWT({ ok: true })
+export type InfosSession = { sub?: string; email?: string };
+
+/** `sub` = identifiant Supabase du compte (absent en mode identifiants d'environnement). */
+export async function signerSession(infos: InfosSession = {}): Promise<string> {
+  return new SignJWT({ ok: true, ...infos })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${DUREE_SESSION}s`)
@@ -30,3 +33,22 @@ export async function sessionValide(jeton?: string): Promise<boolean> {
     return false;
   }
 }
+
+/** Contenu d'une session valide, ou null. */
+export async function lireSession(jeton?: string): Promise<InfosSession | null> {
+  if (!jeton) return null;
+  try {
+    const { payload } = await jwtVerify(jeton, cle());
+    return { sub: payload.sub as string | undefined, email: payload.email as string | undefined };
+  } catch {
+    return null;
+  }
+}
+
+export const OPTIONS_COOKIE = {
+  httpOnly: true,
+  sameSite: "strict" as const,
+  secure: process.env.NODE_ENV === "production",
+  path: "/",
+  maxAge: DUREE_SESSION,
+};

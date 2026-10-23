@@ -12,7 +12,7 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Compte rendu de diagnostic — GO Architecture",
+  title: "GO Architecture — Comptes rendus de visite et de chantier",
   description: "Note vocale et photos → document Word prêt à relire.",
 };
 

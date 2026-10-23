@@ -2,7 +2,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { COOKIE, sessionValide } from "@/lib/session";
 
-const PUBLICS = new Set(["/login", "/api/login", "/api/logout"]);
+const PUBLICS = new Set([
+  "/login", "/api/login", "/api/logout",
+  // Mot de passe oublié : par définition, on n'est pas connecté.
+  "/mot-de-passe-oublie", "/api/mdp-oublie", "/reinitialiser", "/api/reinitialiser",
+]);
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -22,5 +26,5 @@ export async function middleware(req: NextRequest) {
 
 // On protège tout sauf les ressources statiques de Next (nécessaires à /login).
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon.svg).*)"],
 };

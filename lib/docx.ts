@@ -38,6 +38,7 @@ export interface PhotoDocx {
 export interface MetaChantier {
   numeroReunion?: string;
   objet?: string;
+  prochaineReunion?: string; // AAAA-MM-JJ
 }
 
 type El = any;
@@ -139,6 +140,8 @@ interface OptInser {
   taille?: number;
   couleur?: string | null;
   espaceAvant?: number;
+  /** Titre : jamais seul en bas de page, il passe à la page suivante avec son texte. */
+  solidaire?: boolean;
 }
 
 // Insère un nouveau paragraphe juste après `par`, en clonant sa mise en forme.
@@ -156,8 +159,18 @@ function insererApres(doc: any, par: El, texte = "", opt: OptInser = {}): El {
     ppr = creer(doc, "w:pPr");
     np.insertBefore(ppr, np.firstChild);
   }
-  for (const t of ["w:pStyle", "w:spacing"]) enfants(ppr, t).forEach((e) => ppr.removeChild(e));
-  ppr.insertBefore(creer(doc, "w:pStyle", { "w:val": opt.style || "Normal" }), ppr.firstChild);
+  // Le clone hérite des réglages de pagination de l'ancre (souvent un titre de section) :
+  // on les retire, sinon tous les paragraphes insérés seraient « collés » au suivant.
+  for (const t of ["w:pStyle", "w:keepNext", "w:keepLines", "w:pageBreakBefore", "w:spacing"]) {
+    enfants(ppr, t).forEach((e) => ppr.removeChild(e));
+  }
+  const style = creer(doc, "w:pStyle", { "w:val": opt.style || "Normal" });
+  ppr.insertBefore(style, ppr.firstChild);
+  if (opt.solidaire) {
+    // Ordre imposé par le format : pStyle, keepNext, keepLines.
+    ppr.insertBefore(creer(doc, "w:keepLines"), style.nextSibling);
+    ppr.insertBefore(creer(doc, "w:keepNext"), style.nextSibling);
+  }
   ppr.appendChild(
     creer(doc, "w:spacing", { "w:before": String((opt.espaceAvant || 0) * 20), "w:after": "40" }),
   );
@@ -465,7 +478,7 @@ function remplirCartouche(zip: any, chantier: Chantier): void {
   if (!tbl) return;
   const rows = enfants(tbl, "w:tr");
   const cell = (r: number, c: number) => enfants(rows[r], "w:tc")[c];
-  ecrireCellule(doc, cell(0, 5), frDate(chantier.date_visite), { taille: 8, centre: true });
+  ecrireCellule(doc, cell(0, 5), frDateCourte(chantier.date_visite), { taille: 8, centre: true });
   ecrireCellule(doc, cell(1, 0), chantier.moa || "", { taille: 8, centre: true });
   ecrireCellule(doc, cell(1, 1), chantier.adresse || "", { taille: 8, centre: true });
   forcerBorduresCellules(doc, tbl);
@@ -523,6 +536,25 @@ function forcerBorduresCellules(doc: any, tbl: El): void {
     if (ref) tcPr.insertBefore(bordures, ref);
     else tcPr.appendChild(bordures);
   }
+}
+
+// Bandeaux de section du modèle (style Titre1 : CONTACTS, GENERALITES, OBSERVATIONS…) :
+// ils restent sur la même page que la première ligne qui les suit. Sans ça, un bandeau
+// pouvait finir seul en bas de page, son contenu commençant sur la page suivante.
+function solidariserTitresDeSection(doc: any): void {
+  for (const p of tous(doc, "w:p")) {
+    const ppr = enfants(p, "w:pPr")[0];
+    const style = ppr && enfants(ppr, "w:pStyle")[0];
+    if (!style || !/^(Titre|Heading)\s?1$/i.test(style.getAttribute("w:val") || "")) continue;
+    if (!enfants(ppr, "w:keepNext").length) ppr.insertBefore(creer(doc, "w:keepNext"), style.nextSibling);
+  }
+}
+
+// Date courte (jj/mm/aa) du cartouche : c'est le format du modèle de l'agence, et la case
+// est dimensionnée pour lui. Avec l'année sur 4 chiffres, la date passait sur deux lignes.
+function frDateCourte(iso?: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || "");
+  return m ? `${m[3]}/${m[2]}/${m[1].slice(2)}` : frDate(iso);
 }
 
 function frDate(iso?: string): string {
@@ -612,7 +644,7 @@ function insererConclusionChantier(doc: any, ancre: El, conclusion?: Conclusion)
   const paras = [...(conclusion?.synthese || []), ...(conclusion?.energetique || [])].filter(Boolean);
   if (!paras.length) return;
   const blocs: { texte: string; opt: OptInser }[] = [
-    { texte: "Conclusion", opt: { gras: true, taille: 11, espaceAvant: 12 } },
+    { texte: "Conclusion", opt: { gras: true, taille: 11, espaceAvant: 12, solidaire: true } },
     ...paras.map((texte) => ({ texte, opt: { taille: 10 } as OptInser })),
   ];
   for (const b of blocs.reverse()) insererApres(doc, ancre, b.texte, b.opt);
@@ -626,10 +658,13 @@ function insererObservations(doc: any, ancre: El, observations: Observation[]): 
     const titreSansNumero = String(obs.titre || "").replace(/^\s*\d+\s*[.)\-–]\s*/, "").trim();
     const titre = `${i + 1}. ${titreSansNumero}`;
     const blocs: { texte: string; opt: OptInser }[] = [];
-    blocs.push({ texte: titre, opt: { gras: true, taille: 11, espaceAvant: 10 } });
-    if (obs.constat) blocs.push({ texte: `Constat : ${obs.constat}`, opt: { taille: 10 } });
-    if (obs.analyse) blocs.push({ texte: `Analyse : ${obs.analyse}`, opt: { taille: 10 } });
-    if (obs.preconisation) blocs.push({ texte: `Préconisation : ${obs.preconisation}`, opt: { taille: 10 } });
+    blocs.push({ texte: titre, opt: { gras: true, taille: 11, espaceAvant: 10, solidaire: true } });
+    // Pas de libellés « Constat : / Analyse : / Préconisation : » : le document se lit
+    // comme un compte rendu rédigé, pas comme une fiche. Les trois champs sortent en
+    // paragraphes consécutifs, le titre de l'observation portant déjà la catégorie.
+    if (obs.constat) blocs.push({ texte: obs.constat, opt: { taille: 10 } });
+    if (obs.analyse) blocs.push({ texte: obs.analyse, opt: { taille: 10 } });
+    if (obs.preconisation) blocs.push({ texte: obs.preconisation, opt: { taille: 10 } });
     if (obs.photos_liees?.length) {
       const nums = obs.photos_liees.map((n) => `n° ${n}`).join(", ");
       blocs.push({ texte: `(cf. photos ${nums})`, opt: { taille: 9, italique: true } });
@@ -668,6 +703,41 @@ function definirTexteParagraphe(doc: any, p: El, texte: string): void {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * « PROCHAINE REUNION LE jj/mm/aaaa », aligné à droite sur la ligne
+ * « REUNION du jj/mm/aaaa », comme sur les comptes rendus de l'agence.
+ * On pose un taquet de tabulation à la marge droite (10206 twips, celui
+ * qu'utilise déjà le modèle) plutôt qu'un paragraphe séparé : la mention reste
+ * sur la même ligne et hérite de la police du bloc titre.
+ */
+function ecrireProchaineReunion(doc: any, par: El, date: string): void {
+  const jour = (date || "").trim();
+  if (!jour) return;
+
+  let ppr = enfants(par, "w:pPr")[0];
+  if (!ppr) {
+    ppr = creer(doc, "w:pPr");
+    par.insertBefore(ppr, par.firstChild);
+  }
+  // <w:tabs> doit précéder spacing/ind/jc dans l'ordre imposé par le format.
+  enfants(ppr, "w:tabs").forEach((e) => ppr.removeChild(e));
+  const tabs = creer(doc, "w:tabs");
+  tabs.appendChild(creer(doc, "w:tab", { "w:val": "right", "w:pos": "10206" }));
+  const style = enfants(ppr, "w:pStyle")[0];
+  ppr.insertBefore(tabs, style ? style.nextSibling : ppr.firstChild);
+
+  const runs = enfants(par, "w:r");
+  const modele = runs[runs.length - 1];
+  const run = creer(doc, "w:r");
+  if (modele) {
+    const rpr = enfants(modele, "w:rPr")[0];
+    if (rpr) run.appendChild(rpr.cloneNode(true) as El);
+  }
+  run.appendChild(creer(doc, "w:tab"));
+  run.appendChild(runTexte(doc, `PROCHAINE REUNION LE ${frDate(jour)}`));
+  par.appendChild(run);
+}
+
 /** Le nom qui signe le document : celui de la maîtrise d'oeuvre. */
 function nomSignataire(contacts: Chantier["contacts"]): string {
   const moe = (contacts || []).find((c) => (c.groupe || "").toUpperCase() === "MOE");
@@ -943,7 +1013,7 @@ export function genererDocx(
     const blocs: { texte: string; opt: OptInser }[] = [];
     for (const para of concl.synthese || []) blocs.push({ texte: para, opt: { taille: 10, espaceAvant: 4 } });
     if (concl.energetique?.length) {
-      blocs.push({ texte: "Volet énergétique", opt: { gras: true, taille: 10, espaceAvant: 8 } });
+      blocs.push({ texte: "Volet énergétique", opt: { gras: true, taille: 10, espaceAvant: 8, solidaire: true } });
       for (const para of concl.energetique) blocs.push({ texte: para, opt: { taille: 10 } });
     }
     for (const b of blocs.reverse()) insererApres(doc, ancre, b.texte, b.opt);
@@ -957,6 +1027,9 @@ export function genererDocx(
 
   // --- Nettoyage : plus de page blanche en trop en fin de document ---
   essayer(() => supprimerParagraphesVidesEnFin(doc));
+
+  // --- Pagination : aucun titre seul en bas de page ---
+  essayer(() => solidariserTitresDeSection(doc));
 
   // --- Écriture ---
   ecrireRels();
@@ -991,7 +1064,13 @@ export function genererDocxChantier(
   if (pAdresse) definirTexteParagraphe(doc, pAdresse, (chantier.adresse || "").toUpperCase());
   const pObjet = pAdresse ? paragrapheSuivant(pAdresse) : null; // ligne objet de l'opération
   if (pObjet) definirTexteParagraphe(doc, pObjet, (meta.objet || "").toUpperCase());
-  essayer(() => definirTexteParagraphe(doc, trouver(doc, "REUNION du"), `REUNION du ${frDate(chantier.date_visite)}`));
+  essayer(() => {
+    const pDate = trouver(doc, "REUNION du");
+    definirTexteParagraphe(doc, pDate, `REUNION du ${frDate(chantier.date_visite)}`);
+    // Sur la ligne de la date : courte, elle laisse la place à la mention à droite
+    // (sur la ligne de l'objet, un intitulé long la renvoyait à la ligne).
+    ecrireProchaineReunion(doc, pDate, meta.prochaineReunion || "");
+  });
 
   // --- Code immeuble ---
   essayer(() => completer(doc, trouver(doc, "Code immeuble"), String(chantier.code_immeuble || "")));
@@ -1020,6 +1099,9 @@ export function genererDocxChantier(
 
   // --- Nettoyage : plus de page blanche en trop en fin de document ---
   essayer(() => supprimerParagraphesVidesEnFin(doc));
+
+  // --- Pagination : aucun titre seul en bas de page ---
+  essayer(() => solidariserTitresDeSection(doc));
 
   // --- Écriture ---
   ecrireRels();

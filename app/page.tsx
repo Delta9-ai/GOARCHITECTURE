@@ -6,6 +6,7 @@ import { compresser } from "@/lib/photos";
 import { avecMoe, MOE_VIDE } from "@/lib/moe";
 import { paragraphePrecisions, precisionsOubliees } from "@/lib/precisions";
 import type { Chantier, Contact } from "@/lib/types";
+import { Logo } from "./components/Logo";
 
 interface PhotoUI {
   id: string;
@@ -52,7 +53,6 @@ const TYPES_DOC: Record<
     resume: string;
     template: string;
     prefixe: string;
-    intro: string;
     bouton: string;
   }
 > = {
@@ -62,8 +62,6 @@ const TYPES_DOC: Record<
     resume: "Diagnostic de copropriété à partir d'une visite : constats, analyses, préconisations.",
     template: "/DIAG_MODEL_SDC.docx",
     prefixe: "CR_DIAG",
-    intro:
-      "Note vocale de visite et photos : l'outil rédige le rapport et le met en page dans le template de l'agence, prêt à relire dans Word.",
     bouton: "Générer le rapport de visite",
   },
   chantier: {
@@ -72,8 +70,6 @@ const TYPES_DOC: Record<
     resume: "Compte rendu de réunion de chantier : suivi, observations, présents et excusés.",
     template: "/CR_CHANTIER_MODEL.docx",
     prefixe: "CR_CHANTIER",
-    intro:
-      "Note vocale de réunion de chantier et photos : l'outil rédige le compte rendu et le met en page dans le template de l'agence, prêt à relire dans Word.",
     bouton: "Générer le compte rendu",
   },
 };
@@ -105,8 +101,14 @@ export default function OutilPage() {
   const [presents, setPresents] = useState<Record<number, boolean>>({});
   const [numeroReunion, setNumeroReunion] = useState<string>("");
   const [objet, setObjet] = useState<string>("");
+  const [prochaineReunion, setProchaineReunion] = useState<string>("");
   const [transcription, setTranscription] = useState<string>("");
   const [photos, setPhotos] = useState<PhotoUI[]>([]);
+  const [survolPhotos, setSurvolPhotos] = useState(false);
+  const [glisse, setGlisse] = useState<string | null>(null); // photo en cours de déplacement
+  // Sauvegarde automatique du brouillon : "ok", "sansPhotos" (photos trop lourdes pour le
+  // stockage du navigateur) ou "echec". Affichée pour ne jamais perdre une saisie en silence.
+  const [brouillon, setBrouillon] = useState<"ok" | "sansPhotos" | "echec" | null>(null);
 
   const [erreur, setErreur] = useState<string>("");
   const [enreg, setEnreg] = useState(false);
@@ -120,6 +122,10 @@ export default function OutilPage() {
   const [revision, setRevision] = useState<Revision | null>(null);
   const [enregCorr, setEnregCorr] = useState<number | null>(null); // champ correction en cours d'enregistrement
   const [corrTrans, setCorrTrans] = useState<number | null>(null); // champ correction en cours de transcription
+  // Dictée de la légende d'une photo : on repère la photo par son id, et non par
+  // son rang, parce qu'on peut la déplacer ou en supprimer une pendant la dictée.
+  const [enregLeg, setEnregLeg] = useState<string | null>(null);
+  const [legTrans, setLegTrans] = useState<string | null>(null);
   // Modale immeuble : "nouveau" pour une création, l'indice de l'immeuble pour une
   // modification, null quand elle est fermée.
   const [modaleImmeuble, setModaleImmeuble] = useState<"nouveau" | number | null>(null);
@@ -141,6 +147,9 @@ export default function OutilPage() {
   const corrRecorder = useRef<MediaRecorder | null>(null);
   const corrChunks = useRef<Blob[]>([]);
   const corrStream = useRef<MediaStream | null>(null);
+  const legRecorder = useRef<MediaRecorder | null>(null);
+  const legChunks = useRef<Blob[]>([]);
+  const legStream = useRef<MediaStream | null>(null);
 
   // ---- Chargement initial + restauration WIP -------------------------------
   useEffect(() => {
@@ -156,6 +165,7 @@ export default function OutilPage() {
         if (e.presents) setPresents(e.presents);
         if (e.numeroReunion) setNumeroReunion(e.numeroReunion);
         if (e.objet) setObjet(e.objet);
+        if (e.prochaineReunion) setProchaineReunion(e.prochaineReunion);
         if (e.transcription) setTranscription(e.transcription);
         if (Array.isArray(e.photos)) setPhotos(e.photos);
       }
@@ -179,17 +189,19 @@ export default function OutilPage() {
   // ---- Sauvegarde WIP à chaque changement ----------------------------------
   useEffect(() => {
     if (!restaure) return;
-    const base = { docType, index, date, presents, numeroReunion, objet, transcription };
+    const base = { docType, index, date, presents, numeroReunion, objet, prochaineReunion, transcription };
     try {
       localStorage.setItem(CLE_WIP, JSON.stringify({ ...base, photos }));
+      setBrouillon("ok");
     } catch {
       try {
         localStorage.setItem(CLE_WIP, JSON.stringify({ ...base, photos: photos.map((p) => ({ ...p, dataUrl: "" })) }));
+        setBrouillon("sansPhotos");
       } catch {
-        /* ignore */
+        setBrouillon("echec");
       }
     }
-  }, [docType, index, date, presents, numeroReunion, objet, transcription, photos, restaure]);
+  }, [docType, index, date, presents, numeroReunion, objet, prochaineReunion, transcription, photos, restaure]);
 
   // ---- Coordonnées de l'agence, injectées dans toutes les fiches -----------
   // L'architecte n'a pas à ressaisir ses propres informations : on les récupère
@@ -365,8 +377,10 @@ export default function OutilPage() {
       const r = await fetch("/api/transcribe", { method: "POST", body: fd });
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Échec de la transcription.");
-      setTranscription(data.transcription);
-      setEtatTranscription(`Transcrit (${data.duree}s) — relisez et corrigez si besoin.`);
+      // La dictée s'ajoute à ce qui est déjà écrit : on peut taper une partie
+      // de la note chez soi et dicter le reste sur place.
+      setTranscription((t) => (t.trim() ? t.trimEnd() + "\n\n" : "") + data.transcription);
+      setEtatTranscription(`Dictée transcrite (${data.duree}s) — relisez et corrigez si besoin.`);
     } catch (e) {
       setEtatTranscription("");
       montrerErreur(e instanceof Error ? e.message : "La transcription a échoué.");
@@ -389,6 +403,24 @@ export default function OutilPage() {
     }
     setPhotos((p) => [...p, ...nouvelles]);
   }
+  // Glisser-déposer : un fichier lâché à côté de la zone ne doit pas ouvrir
+  // l'image dans l'onglet (on perdrait toute la saisie en cours).
+  useEffect(() => {
+    const bloquer = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", bloquer);
+    window.addEventListener("drop", bloquer);
+    return () => {
+      window.removeEventListener("dragover", bloquer);
+      window.removeEventListener("drop", bloquer);
+    };
+  }, []);
+
+  // « Tous absents » laisse l'agence (MOE) cochée : c'est l'architecte qui tient la réunion.
+  function toutCocher(present: boolean) {
+    const contacts = chantierCourant?.contacts || [];
+    setPresents(Object.fromEntries(contacts.map((c, i) => [i, present || (c.groupe || "").toUpperCase() === "MOE"])));
+  }
+
   function deplacerPhoto(i: number, sens: number) {
     setPhotos((p) => {
       const j = i + sens;
@@ -399,6 +431,42 @@ export default function OutilPage() {
       return copie;
     });
   }
+  // Réordonner en faisant glisser : au doigt depuis la poignée, ou à la souris depuis la
+  // photo elle-même. La photo survolée prend la place de celle qu'on déplace, en direct.
+  function debutGlisser(e: React.PointerEvent<HTMLElement>, id: string) {
+    if ((e.target as HTMLElement).closest("button") && !(e.target as HTMLElement).closest("[data-poignee]")) return;
+    e.preventDefault();
+    e.stopPropagation(); // la poignée est dans la photo : un seul des deux doit réagir
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId); // suit le doigt même hors de la poignée
+    } catch {
+      /* pointeur déjà relâché : sans conséquence */
+    }
+    setGlisse(id);
+  }
+  function pendantGlisser(e: React.PointerEvent<HTMLElement>) {
+    if (!glisse) return;
+    e.stopPropagation(); // sinon la photo, sous la poignée, rejouerait le déplacement
+    // Défilement automatique près des bords (la barre d'action occupe le bas de l'écran).
+    if (e.clientY < 70) window.scrollBy(0, -14);
+    else if (e.clientY > window.innerHeight - 140) window.scrollBy(0, 14);
+    const cible = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-photo-id]");
+    const idCible = cible?.dataset.photoId;
+    if (!idCible || idCible === glisse) return;
+    setPhotos((p) => {
+      const de = p.findIndex((x) => x.id === glisse);
+      const vers = p.findIndex((x) => x.id === idCible);
+      if (de < 0 || vers < 0) return p;
+      const copie = [...p];
+      const [item] = copie.splice(de, 1);
+      copie.splice(vers, 0, item);
+      return copie;
+    });
+  }
+  function finGlisser() {
+    setGlisse(null);
+  }
+
   function supprimerPhoto(id: string) {
     setPhotos((p) => p.filter((x) => x.id !== id));
   }
@@ -428,7 +496,7 @@ export default function OutilPage() {
     const r = await fetch("/api/extract", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chantier: fiche, transcription: texte, photoNames: photos.map((p) => p.nom) }),
+      body: JSON.stringify({ chantier: fiche, transcription: texte, photoNames: photos.map((p) => p.nom), docType, meta: { numeroReunion, objet, prochaineReunion } }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || "L'analyse a échoué.");
@@ -446,7 +514,7 @@ export default function OutilPage() {
     const photosDocx = photos.map((p) => ({ data: dataUrlVersUint8(p.dataUrl), legende: p.legende || "" }));
     const octets =
       docType === "chantier"
-        ? genererDocxChantier(template, donnees as never, fiche, photosDocx, { numeroReunion, objet })
+        ? genererDocxChantier(template, donnees as never, fiche, photosDocx, { numeroReunion, objet, prochaineReunion })
         : genererDocx(template, donnees as never, fiche, photosDocx);
 
     const slug = fiche.sdc.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase();
@@ -529,6 +597,61 @@ export default function OutilPage() {
       setProgression(null);
       montrerErreur(e instanceof Error ? e.message : "La génération a échoué.");
     }
+  }
+
+  // Dicte la légende de la photo `id` (appui = démarrer / arrêter). Le texte
+  // transcrit s'ajoute à la suite de ce qui est déjà écrit, comme pour les corrections.
+  async function dicterLegende(id: string): Promise<void> {
+    if (enregLeg === id && legRecorder.current) {
+      legRecorder.current.stop();
+      return;
+    }
+    if (enregLeg !== null) return; // une seule légende à la fois
+    if (!navigator.mediaDevices?.getUserMedia) {
+      montrerErreur("Ce navigateur ne permet pas l'enregistrement direct. Tapez la légende au clavier.");
+      return;
+    }
+    try {
+      legStream.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      montrerErreur("Le micro n'est pas autorisé. Tapez la légende au clavier.");
+      return;
+    }
+    legChunks.current = [];
+    const t = typeAudioSupporte();
+    let rec: MediaRecorder;
+    try {
+      rec = t ? new MediaRecorder(legStream.current, { mimeType: t }) : new MediaRecorder(legStream.current);
+    } catch {
+      rec = new MediaRecorder(legStream.current);
+    }
+    legRecorder.current = rec;
+    rec.ondataavailable = (e) => {
+      if (e.data && e.data.size) legChunks.current.push(e.data);
+    };
+    rec.onstop = async () => {
+      legStream.current?.getTracks().forEach((x) => x.stop());
+      setEnregLeg(null);
+      const type = rec.mimeType || t || "audio/webm";
+      const blob = new Blob(legChunks.current, { type });
+      setLegTrans(id);
+      try {
+        const fd = new FormData();
+        fd.append("audio", blob, "legende." + extensionDepuisType(type));
+        const r = await fetch("/api/transcribe", { method: "POST", body: fd });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || "La transcription a échoué.");
+        setPhotos((p) =>
+          p.map((x) => (x.id === id ? { ...x, legende: (x.legende ? x.legende + " " : "") + data.transcription } : x)),
+        );
+      } catch (e) {
+        montrerErreur(e instanceof Error ? e.message : "La transcription a échoué.");
+      } finally {
+        setLegTrans(null);
+      }
+    };
+    rec.start();
+    setEnregLeg(id);
   }
 
   // Dicte une correction dans le champ `i` (appui = démarrer / arrêter).
@@ -663,17 +786,24 @@ export default function OutilPage() {
 
       <header className="border-b border-line/80 bg-surface/70">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 h-16 flex items-center gap-3">
-          {/* Pastille aux couleurs du document en cours : bleu en visite, orange en chantier. */}
-          <div className="w-9 h-9 rounded-lg bg-accent text-paper flex items-center justify-center shrink-0 transition-colors">
-            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 21h18" /><path d="M5 21V7l8-4v18" /><path d="M19 21V11l-6-4" /><path d="M9 9v.01" /><path d="M9 12v.01" /><path d="M9 15v.01" />
-            </svg>
-          </div>
+          <Logo className="w-8 h-8 shrink-0" />
           <div className="leading-tight min-w-0">
-            <div className="kicker text-accent truncate">GO Architecture</div>
+            <div className="marque text-ink text-[12px] truncate">GO Architecture</div>
             <div className="font-display font-semibold text-[15.5px] -mt-[1px] truncate">Rédaction de comptes rendus</div>
           </div>
-          <button onClick={deconnexion} className="ml-auto btn-fant h-10 px-3 text-[13.5px] flex items-center gap-1.5 shrink-0">
+          <a href="/reglages" className="ml-auto btn-fant h-10 px-3 text-[13.5px] flex items-center gap-1.5 shrink-0" aria-label="Réglages IA">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" />
+            </svg>
+            <span className="hidden sm:inline">Réglages IA</span>
+          </a>
+          <a href="/compte" className="btn-fant h-10 px-3 text-[13.5px] flex items-center gap-1.5 shrink-0" aria-label="Mon compte">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+            </svg>
+            <span className="hidden sm:inline">Mon compte</span>
+          </a>
+          <button onClick={deconnexion} className="btn-fant h-10 px-3 text-[13.5px] flex items-center gap-1.5 shrink-0">
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
             </svg>
@@ -705,10 +835,9 @@ export default function OutilPage() {
             </button>
           ))}
         </div>
-        <p className="text-[14.5px] text-muted max-w-xl leading-relaxed">{cfg.intro}</p>
 
         {/* 01 — CHANTIER */}
-        <section className="card p-5 sm:p-6">
+        <section id="etape-immeuble" className="card p-5 sm:p-6 scroll-mt-4">
           <div className="flex items-baseline gap-3 mb-5">
             <span className="kicker text-accent">01</span>
             <h2 className="font-display text-[19px] font-semibold leading-none">Le chantier</h2>
@@ -783,6 +912,15 @@ export default function OutilPage() {
                   </div>
                 )}
                 {docType === "chantier" && (
+                  <div>
+                    <label className="block kicker text-muted mb-2" htmlFor="prochaine-reunion">Prochaine réunion</label>
+                    <input
+                      id="prochaine-reunion" type="date" value={prochaineReunion}
+                      onChange={(e) => setProchaineReunion(e.target.value)} className="champ w-full h-12"
+                    />
+                  </div>
+                )}
+                {docType === "chantier" && (
                   <div className="sm:col-span-2">
                     <label className="block kicker text-muted mb-2" htmlFor="objet-op">Objet de l&apos;opération</label>
                     <input
@@ -794,9 +932,18 @@ export default function OutilPage() {
                 )}
               </div>
               <div className="mt-5">
-                <span className="block kicker text-muted mb-2.5">
-                  Personnes présentes <span className="normal-case tracking-normal text-faint font-sans">(décochez les absents)</span>
-                </span>
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2.5">
+                  <span className="kicker text-muted">
+                    Personnes présentes <span className="normal-case tracking-normal text-faint font-sans">(décochez les absents)</span>
+                  </span>
+                  {(chantierCourant.contacts || []).length > 2 && (
+                    <span className="ml-auto flex items-center gap-1 text-[12.5px]">
+                      <button type="button" onClick={() => toutCocher(true)} className="text-accent hover:underline px-1.5 py-1 min-h-0">Tous présents</button>
+                      <span className="text-faint" aria-hidden="true">·</span>
+                      <button type="button" onClick={() => toutCocher(false)} className="text-accent hover:underline px-1.5 py-1 min-h-0">Tous absents</button>
+                    </span>
+                  )}
+                </div>
                 {/* grid-cols-1 et min-w-0 : sans colonne explicite, la grille prenait la
                     largeur du nom le plus long (« …, architecte de copropriété ») et
                     débordait de l'écran du téléphone, emportant toute la page avec elle. */}
@@ -822,48 +969,66 @@ export default function OutilPage() {
           )}
         </section>
 
-        {/* 02 — NOTE VOCALE */}
-        <section className="card p-5 sm:p-6">
-          <div className="flex items-baseline gap-3 mb-5">
+        {/* 02 — LA NOTE (dictée ou écrite : un seul texte envoyé à l'IA) */}
+        <section id="etape-note" className="card p-5 sm:p-6 scroll-mt-4">
+          <div className="flex items-baseline gap-3 mb-1.5">
             <span className="kicker text-accent">02</span>
-            <h2 className="font-display text-[19px] font-semibold leading-none">La note vocale</h2>
+            <h2 className="font-display text-[19px] font-semibold leading-none">La note</h2>
             {transcription.trim() && <span className="ml-auto text-[12.5px] text-faint">{transcription.trim().split(/\s+/).length} mots</span>}
           </div>
+          <p className="text-[12.5px] text-faint mb-4">Dictez, écrivez, ou les deux : tout arrive dans le même texte.</p>
 
           <div className="grid sm:grid-cols-2 gap-3.5">
-            <div className="rounded-[11px] border border-line p-5 flex flex-col items-center justify-center text-center bg-[var(--tint-depot)]">
-              <button
-                onClick={basculerEnreg} disabled={microBloque}
-                className={`rec-btn ${enreg ? "enreg pulse-rec" : ""} ${microBloque ? "opacity-40 cursor-not-allowed" : ""}`}
-                aria-label="Démarrer l'enregistrement"
-              >
-                {enreg ? (
-                  <svg className="w-7 h-7" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
-                ) : (
-                  <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" />
-                  </svg>
-                )}
-              </button>
-              {enreg && <div className="mt-3 font-display font-semibold text-[19px] tabular-nums">{chrono}</div>}
-              <div ref={ondeRef} className={`onde mt-2 ${enreg ? "" : "hidden"}`} aria-hidden="true" />
-              <p className="mt-3 text-[13.5px] text-muted leading-snug max-w-[220px]">
-                {microBloque
-                  ? "Enregistrement direct bloqué ici (réseau non sécurisé). Utilisez le dépôt de fichier : le dictaphone du téléphone s'ouvrira."
-                  : enreg
-                    ? "Enregistrement… appuyez pour arrêter."
-                    : "Appuyez pour dicter votre note de visite."}
-              </p>
+            <div className="flex flex-col gap-3.5">
+              <div className="flex-1 rounded-[11px] border border-line p-5 flex flex-col items-center justify-center text-center bg-[var(--tint-depot)]">
+                <button
+                  onClick={basculerEnreg} disabled={microBloque}
+                  className={`rec-btn ${enreg ? "enreg pulse-rec" : ""} ${microBloque ? "opacity-40 cursor-not-allowed" : ""}`}
+                  aria-label="Démarrer l'enregistrement"
+                >
+                  {enreg ? (
+                    <svg className="w-7 h-7" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
+                  ) : (
+                    <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" />
+                    </svg>
+                  )}
+                </button>
+                {enreg && <div className="mt-3 font-display font-semibold text-[19px] tabular-nums">{chrono}</div>}
+                <div ref={ondeRef} className={`onde mt-2 ${enreg ? "" : "hidden"}`} aria-hidden="true" />
+                <p className="mt-3 text-[13.5px] text-muted leading-snug max-w-[220px]">
+                  {microBloque
+                    ? "Enregistrement direct bloqué ici (réseau non sécurisé). Utilisez le dépôt de fichier : le dictaphone du téléphone s'ouvrira."
+                    : enreg
+                      ? "Enregistrement… appuyez pour arrêter."
+                      : "Appuyez pour dicter votre note."}
+                </p>
+              </div>
+
+              <label className="depot px-4 py-3 flex items-center gap-3 cursor-pointer">
+                <svg className="w-5 h-5 text-muted shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <span className="text-left">
+                  <span className="block text-[13.5px] font-medium">Déposer un fichier audio</span>
+                  <span className="block text-[12px] text-faint">.m4a, .mp3, .wav, .ogg</span>
+                </span>
+                <input type="file" accept=".m4a,.mp3,.wav,.ogg,audio/*" className="hidden" onChange={(e) => { surFichierAudio(e.target.files?.[0]); e.target.value = ""; }} />
+              </label>
             </div>
 
-            <label className="depot p-5 flex flex-col items-center justify-center text-center cursor-pointer">
-              <svg className="w-7 h-7 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-              <p className="mt-2.5 text-[14.5px] font-medium">Déposer un fichier audio</p>
-              <p className="text-[12.5px] text-faint mt-0.5">.m4a, .mp3, .wav, .ogg — ou appuyez pour choisir</p>
-              <input type="file" accept=".m4a,.mp3,.wav,.ogg,audio/*" className="hidden" onChange={(e) => surFichierAudio(e.target.files?.[0])} />
-            </label>
+            <div className="flex flex-col min-h-[260px]">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <label className="kicker text-muted" htmlFor="txt">Écrire la note</label>
+                <span className="text-[12px] text-faint text-right">{etatTranscription}</span>
+              </div>
+              <textarea
+                id="txt" value={transcription}
+                onChange={(e) => setTranscription(e.target.value)}
+                className="champ flex-1 w-full py-3 text-[15px] leading-relaxed resize-y min-h-[220px]"
+                placeholder="Tapez votre note ici, ou dictez-la : le texte transcrit s'affichera ici et restera modifiable."
+              />
+            </div>
           </div>
 
           {audioUrl && (
@@ -871,68 +1036,93 @@ export default function OutilPage() {
               <audio src={audioUrl} controls className="flex-1 min-w-[200px] h-11" />
             </div>
           )}
-
-          {(transcription || etatTranscription) && (
-            <div className="mt-5">
-              <div className="flex items-center justify-between mb-2">
-                <label className="kicker text-muted" htmlFor="txt">
-                  Transcription <span className="normal-case tracking-normal text-faint font-sans">(corrigez si besoin)</span>
-                </label>
-                <span className="text-[12.5px] text-faint">{etatTranscription}</span>
-              </div>
-              <textarea
-                id="txt" rows={6} value={transcription}
-                onChange={(e) => setTranscription(e.target.value)}
-                className="champ w-full py-3 text-[15px] leading-relaxed resize-y"
-                placeholder="Le texte transcrit apparaîtra ici…"
-              />
-            </div>
-          )}
         </section>
 
         {/* 03 — PHOTOS */}
-        <section className="card p-5 sm:p-6">
+        <section id="etape-photos" className="card p-5 sm:p-6 scroll-mt-4">
           <div className="flex items-baseline gap-3 mb-1.5">
             <span className="kicker text-accent">03</span>
             <h2 className="font-display text-[19px] font-semibold leading-none">Les photos</h2>
             {photos.length > 0 && <span className="ml-auto text-[12.5px] text-faint">{photos.length} photo{photos.length > 1 ? "s" : ""}</span>}
           </div>
-          <p className="text-[12.5px] text-faint mb-4">L&apos;ordre des photos est celui du document. Réordonnez avec les flèches.</p>
+          <p className="text-[12.5px] text-faint mb-4">L&apos;ordre des photos est celui du document. Faites-les glisser pour les réordonner.</p>
 
-          <label className="depot p-6 flex flex-col items-center justify-center text-center cursor-pointer">
+          <label
+            className={`depot p-6 flex flex-col items-center justify-center text-center cursor-pointer${survolPhotos ? " depot--survol" : ""}`}
+            onDragOver={(e) => { e.preventDefault(); setSurvolPhotos(true); }}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setSurvolPhotos(false); }}
+            onDrop={(e) => { e.preventDefault(); setSurvolPhotos(false); ajouterPhotos(e.dataTransfer.files); }}
+          >
             <svg className="w-7 h-7 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2.5" /><circle cx="8.5" cy="8.5" r="1.6" /><polyline points="21 15 16 10 5 21" />
             </svg>
-            <p className="mt-2.5 text-[14.5px] font-medium">Déposer vos photos</p>
-            <p className="text-[12.5px] text-faint mt-0.5">iPhone (.heic) accepté — ou appuyez pour parcourir</p>
-            <input type="file" accept="image/*,.heic" multiple className="hidden" onChange={(e) => e.target.files && ajouterPhotos(e.target.files)} />
+            <p className="mt-2.5 text-[14.5px] font-medium">{survolPhotos ? "Lâchez pour ajouter" : "Glissez vos photos ici"}</p>
+            <p className="text-[12.5px] text-faint mt-0.5">ou cliquez pour parcourir — iPhone (.heic) accepté</p>
+            <input type="file" accept="image/*,.heic" multiple className="hidden" onChange={(e) => { if (e.target.files) ajouterPhotos(e.target.files); e.target.value = ""; }} />
           </label>
 
           {photos.length > 0 && (
             <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {photos.map((ph, i) => (
-                <div key={ph.id} className="photo-carte">
-                  <div className="relative">
+                <div key={ph.id} data-photo-id={ph.id} className={`photo-carte${glisse === ph.id ? " photo-carte--glisse" : ""}`}>
+                  <div
+                    className={`relative select-none ${glisse ? "cursor-grabbing" : "sm:cursor-grab"}`}
+                    onPointerDown={(e) => e.pointerType === "mouse" && debutGlisser(e, ph.id)}
+                    onPointerMove={pendantGlisser} onPointerUp={finGlisser} onPointerCancel={finGlisser}
+                  >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={ph.dataUrl} alt="" className="w-full h-28 object-cover bg-[var(--tint-strong)]" />
+                    <img src={ph.dataUrl} alt="" draggable={false} className="w-full h-28 object-cover bg-[var(--tint-strong)] pointer-events-none" />
                     <span className="absolute top-1.5 left-1.5 font-display text-[11px] font-medium bg-ink/75 text-paper px-1.5 py-0.5 rounded">N° {i + 1}</span>
                     <button onClick={() => supprimerPhoto(ph.id)} className="absolute top-1.5 right-1.5 w-8 h-8 min-h-0 rounded-full bg-ink/70 text-white flex items-center justify-center hover:bg-urgent transition" aria-label="Supprimer">
                       <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                     </button>
-                    <div className="absolute bottom-1.5 right-1.5 flex gap-1">
-                      <button onClick={() => deplacerPhoto(i, -1)} disabled={i === 0} className="w-8 h-8 min-h-0 rounded-md bg-ink/70 text-white flex items-center justify-center disabled:opacity-30 hover:bg-accent transition" aria-label="Déplacer avant">
-                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-                      </button>
-                      <button onClick={() => deplacerPhoto(i, 1)} disabled={i === photos.length - 1} className="w-8 h-8 min-h-0 rounded-md bg-ink/70 text-white flex items-center justify-center disabled:opacity-30 hover:bg-accent transition" aria-label="Déplacer après">
-                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
-                      </button>
-                    </div>
+                    <button
+                      type="button" data-poignee
+                      onPointerDown={(e) => debutGlisser(e, ph.id)}
+                      onPointerMove={pendantGlisser} onPointerUp={finGlisser} onPointerCancel={finGlisser}
+                      onKeyDown={(e) => {
+                        if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); deplacerPhoto(i, -1); }
+                        if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); deplacerPhoto(i, 1); }
+                      }}
+                      className="absolute bottom-1.5 right-1.5 w-9 h-9 min-h-0 rounded-md bg-ink/70 text-white flex items-center justify-center hover:bg-accent transition touch-none cursor-grab active:cursor-grabbing"
+                      aria-label={`Déplacer la photo n° ${i + 1} (faire glisser, ou flèches du clavier)`}
+                      title="Faire glisser pour déplacer"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" />
+                        <circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" />
+                      </svg>
+                    </button>
                   </div>
-                  <input
-                    type="text" value={ph.legende} placeholder="légende facultative"
-                    onChange={(e) => legenderPhoto(ph.id, e.target.value)}
-                    className="w-full text-[16px] sm:text-[13px] px-2.5 py-2 border-t border-line outline-none focus:bg-accent-soft/40" style={{ minHeight: 44 }}
-                  />
+                  {/* Légende : au clavier ou dictée. Le champ portait un simple texte
+                      gris qui passait inaperçu — il annonce maintenant ce qu'il attend. */}
+                  <div className="flex items-stretch border-t border-line">
+                    <input
+                      type="text" value={ph.legende}
+                      placeholder={legTrans === ph.id ? "Transcription en cours…" : "Légende de la photo"}
+                      onChange={(e) => legenderPhoto(ph.id, e.target.value)}
+                      className="flex-1 min-w-0 text-[16px] sm:text-[13px] px-2.5 py-2 outline-none focus:bg-accent-soft/40"
+                      style={{ minHeight: 44 }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => dicterLegende(ph.id)}
+                      disabled={(enregLeg !== null && enregLeg !== ph.id) || legTrans === ph.id}
+                      className={`shrink-0 w-11 flex items-center justify-center border-l border-line transition disabled:opacity-40 ${
+                        enregLeg === ph.id ? "bg-urgent text-white pulse-rec" : "text-muted hover:text-accent"
+                      }`}
+                      aria-label={enregLeg === ph.id ? "Arrêter la dictée" : "Dicter la légende"}
+                      title={enregLeg === ph.id ? "Arrêter la dictée" : "Dicter la légende"}
+                    >
+                      {legTrans === ph.id ? (
+                        <svg className="w-[18px] h-[18px] spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                      ) : enregLeg === ph.id ? (
+                        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
+                      ) : (
+                        <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" /></svg>
+                      )}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -943,11 +1133,41 @@ export default function OutilPage() {
       {/* BARRE D'ACTION */}
       <div className="barre-action">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-          {!pret && (
-            <p className="text-[12.5px] text-muted leading-snug sm:flex-1">
-              Choisissez un immeuble et enregistrez une note vocale pour activer la génération.
-            </p>
-          )}
+          <div className="sm:flex-1 min-w-0">
+            <ol className="flex items-center gap-1.5 flex-wrap" aria-label="Étapes">
+              {([
+                ["etape-immeuble", "Immeuble", index !== "", false],
+                ["etape-note", "Note", transcription.trim().length > 0, false],
+                ["etape-photos", "Photos", photos.length > 0, true],
+              ] as const).map(([cible, nom, fait, facultatif]) => (
+                <li key={cible}>
+                  <button
+                    type="button"
+                    onClick={() => document.getElementById(cible)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                    className={`etape ${fait ? "etape--faite" : ""}`}
+                    title={fait ? `${nom} : fait` : facultatif ? `${nom} : facultatif` : `${nom} : à compléter`}
+                  >
+                    {fait ? (
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                    ) : (
+                      <span className={`w-2.5 h-2.5 rounded-full border-[1.5px] ${facultatif ? "border-dashed" : ""} border-current`} aria-hidden="true" />
+                    )}
+                    {nom}
+                    {facultatif && !fait && <span className="text-faint font-normal">(facultatif)</span>}
+                  </button>
+                </li>
+              ))}
+            </ol>
+            {(index !== "" || transcription.trim() || photos.length > 0) && brouillon && (
+              <p className={`text-[11.5px] mt-1.5 leading-snug ${brouillon === "ok" ? "text-faint" : "text-urgent font-medium"}`} role={brouillon === "ok" ? undefined : "alert"}>
+                {brouillon === "ok"
+                  ? "Brouillon enregistré sur cet appareil."
+                  : brouillon === "sansPhotos"
+                    ? "Photos trop lourdes pour le brouillon : elles seront perdues si vous fermez la page. Générez avant de quitter."
+                    : "Le brouillon n'a pas pu être enregistré : générez avant de quitter la page."}
+              </p>
+            )}
+          </div>
           <button
             onClick={generer} disabled={!pret}
             className="btn-primaire w-full sm:w-auto px-7 h-[52px] text-[15.5px] flex items-center justify-center gap-2.5 shrink-0 sm:ml-auto"
@@ -966,7 +1186,7 @@ export default function OutilPage() {
           <div className="card w-full max-w-md p-6 sm:p-7">
             <h3 className="font-display text-[18px] font-semibold mb-6">Génération en cours</h3>
             <ul className="space-y-4">
-              {([["transcription", "Transcription de la note vocale"], ["analyse", "Analyse et rédaction"], ["miseenpage", "Mise en page dans le template"], ["pret", "Compte rendu prêt"]] as const).map(([cle, lib]) => {
+              {([["transcription", "Lecture de la note"], ["analyse", "Analyse et rédaction"], ["miseenpage", "Mise en page dans le template"], ["pret", "Compte rendu prêt"]] as const).map(([cle, lib]) => {
                 const st = progression[cle] || "attente";
                 return (
                   <li key={cle} className={`flex items-center gap-3 ${st === "attente" ? "text-faint" : "text-ink"}`}>
@@ -997,7 +1217,7 @@ export default function OutilPage() {
               <h3 className="font-display text-[20px] font-semibold">Quelques points à vérifier</h3>
             </div>
             <p className="text-[13.5px] text-muted mb-5 leading-relaxed">
-              Ces points n&apos;étaient pas dans votre note vocale. Cochez ceux à corriger, puis ajoutez la précision
+              Ces points n&apos;étaient pas dans votre note. Cochez ceux à corriger, puis ajoutez la précision
               (au clavier ou à la voix) : elle sera intégrée au compte rendu. Laissez vide pour ignorer.
             </p>
             <ul className="space-y-3.5">
