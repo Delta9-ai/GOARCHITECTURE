@@ -125,7 +125,7 @@ export default function ComptePage() {
 
             <section className="card p-5 sm:p-6">
               <h2 className="font-display text-[19px] font-semibold leading-none mb-1.5">Adresse e-mail de connexion</h2>
-              <p className="text-[12.5px] text-faint mb-4">C&apos;est aussi l&apos;adresse qui reçoit le lien en cas de mot de passe oublié.</p>
+              <p className="text-[12.5px] text-faint mb-4">C&apos;est l&apos;identifiant à saisir pour se connecter à l&apos;outil.</p>
               <MessageErreur texte={etatEmail.erreur} />
               <MessageSucces texte={etatEmail.succes} />
               <form onSubmit={changerEmail} noValidate className="space-y-4">

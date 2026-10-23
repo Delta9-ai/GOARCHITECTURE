@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { BoutonEnvoi, CarteAuth, MessageErreur } from "../components/CarteAuth";
 
@@ -46,10 +45,7 @@ export default function LoginPage() {
           onChange={(e) => setEmail(e.target.value)}
           className="champ w-full h-12 mb-4" placeholder="vous@exemple.com"
         />
-        <div className="flex items-baseline justify-between mb-1.5">
-          <label className="kicker text-muted" htmlFor="mdp">Mot de passe</label>
-          <Link href="/mot-de-passe-oublie" className="text-[12.5px] text-accent hover:underline">Mot de passe oublié ?</Link>
-        </div>
+        <label className="block kicker text-muted mb-1.5" htmlFor="mdp">Mot de passe</label>
         <input
           id="mdp" type="password" autoComplete="current-password" value={mdp}
           onChange={(e) => setMdp(e.target.value)}
